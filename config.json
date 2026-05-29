@@ -1,0 +1,15 @@
+{
+  "preset_activo": "default",
+  "presets": {
+    "default": {
+      "ancho_px": 1067,
+      "alto_px": 1031,
+      "color_fondo": [255, 255, 255],
+      "brillo": 1.32,
+      "formato_salida": "PNG",
+      "cabeza_relativa": 0.68,
+      "margen_superior": 0.05,
+      "modelo_recorte": "u2net_human_seg"
+    }
+  }
+}

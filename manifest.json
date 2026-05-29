@@ -1,0 +1,4 @@
+{
+  "version": 5,
+  "archivos": ["app.py", "editar_fotos.py", "version.txt"]
+}

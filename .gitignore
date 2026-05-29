@@ -1,0 +1,13 @@
+# Pesado / generado: NO subir a GitHub
+modelo/
+dist/
+build/
+*.zip
+__pycache__/
+*.pyc
+entrada/
+salida/
+*.onnx
+
+# Archivos de trabajo locales
+.playwright-mcp/

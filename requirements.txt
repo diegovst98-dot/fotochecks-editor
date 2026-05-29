@@ -1,0 +1,6 @@
+rembg==2.0.75
+onnxruntime==1.26.0
+opencv-python-headless==4.13.0.92
+pillow==12.2.0
+numpy==2.4.6
+openpyxl==3.1.5
