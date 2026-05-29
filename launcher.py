@@ -42,9 +42,26 @@ URL_MANIFEST = _RAW + "/manifest.json"
 URL_CODIGO = _RAW + "/codigo"
 
 
+def _log(msg):
+    # Registro corto para diagnosticar la actualizacion (util para soporte si
+    # algo falla en otra PC). Se reinicia en cada arranque (ver main).
+    try:
+        with open(BASE / "actualizacion.log", "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+    except Exception:
+        pass
+
+
+def _solo_entero(texto):
+    # Lee un numero ignorando BOM, espacios o saltos de linea (robusto).
+    import re
+    m = re.search(r"\d+", str(texto))
+    return int(m.group()) if m else 0
+
+
 def _version_local():
     try:
-        return int((CODIGO / "version.txt").read_text(encoding="utf-8").strip())
+        return _solo_entero((CODIGO / "version.txt").read_text(encoding="utf-8"))
     except Exception:
         return 0
 
@@ -72,14 +89,13 @@ def buscar_actualizacion():
     try:
         with urllib.request.urlopen(URL_MANIFEST, timeout=6, context=ctx) as r:
             manifest = json.loads(r.read().decode("utf-8"))
-    except Exception:
+    except Exception as e:
+        _log("fallo al leer manifest: %r" % (e,))
         return False
 
-    try:
-        remota = int(manifest.get("version", 0))
-    except Exception:
-        return False
+    remota = _solo_entero(manifest.get("version", 0))
     archivos = manifest.get("archivos", [])
+    _log("version local=%s remota=%s" % (_version_local(), remota))
     if remota <= _version_local() or not archivos:
         return False
 
@@ -98,8 +114,10 @@ def buscar_actualizacion():
         CODIGO.mkdir(parents=True, exist_ok=True)
         for nombre in archivos:
             shutil.copy(tmp / nombre, CODIGO / nombre)
+        _log("actualizado a version %s OK" % (remota,))
         return True
-    except Exception:
+    except Exception as e:
+        _log("fallo al descargar/instalar: %r" % (e,))
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -131,9 +149,15 @@ def main():
     # 1) Revisar e instalar actualizacion ANTES de cargar el codigo (asi el swap
     #    ocurre sin que ningun modulo este cargado: simple y sin conflictos).
     try:
-        buscar_actualizacion()
+        (BASE / "actualizacion.log").write_text("", encoding="utf-8")  # reinicia el log
     except Exception:
         pass
+    _log("arranque - version instalada: %s" % (_version_local(),))
+    try:
+        buscar_actualizacion()
+    except Exception as e:
+        import traceback
+        _log("EXCEPCION: %r\n%s" % (e, traceback.format_exc()))
 
     # 2) Cargar el codigo externo desde codigo/ (no esta dentro del exe).
     sys.path.insert(0, str(CODIGO))
