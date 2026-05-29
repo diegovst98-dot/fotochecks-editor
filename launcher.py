@@ -127,16 +127,17 @@ _modelo = BASE / "modelo"
 if _modelo.exists():
     os.environ.setdefault("U2NET_HOME", str(_modelo))
 
-# --- Forzar que PyInstaller incluya las librerias pesadas en el exe ---
+# --- Forzar que PyInstaller incluya las librerias en el exe ---
 # (el codigo que las usa vive afuera, asi que hay que nombrarlas aqui)
+# OJO: rembg y onnxruntime NO se importan aca a proposito: son las mas pesadas
+# de cargar y se importan de forma diferida al procesar la primera foto (ver
+# editar_fotos.py). Igual quedan dentro del exe por los --collect-all del build.
 import numpy            # noqa: F401
 import cv2              # noqa: F401
 import PIL.Image        # noqa: F401
 import PIL.ImageEnhance  # noqa: F401
 import PIL.ImageFilter  # noqa: F401
 import PIL.ImageTk      # noqa: F401
-import rembg            # noqa: F401
-import onnxruntime      # noqa: F401
 import openpyxl         # noqa: F401
 import certifi          # noqa: F401
 import tkinter          # noqa: F401
