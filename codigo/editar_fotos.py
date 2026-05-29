@@ -35,7 +35,17 @@ if _MODELO_DIR.exists():
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
-from rembg import new_session, remove
+
+# rembg (el motor de IA que quita el fondo) es la libreria mas pesada de cargar
+# (arrastra numba y scipy, varios segundos). Por eso NO se importa al abrir: se
+# carga de forma diferida recien al procesar la primera foto, detras del mensaje
+# "Preparando modelo de IA...". Asi la ventana abre casi al instante.
+
+
+def new_session(*args, **kwargs):
+    from rembg import new_session as _new_session
+    return _new_session(*args, **kwargs)
+
 
 EXTENSIONES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
@@ -313,6 +323,7 @@ def encuadrar(img_rgb, cara, alpha, preset):
 
 
 def procesar_una(ruta, preset, session, nombre_salida=None):
+    from rembg import remove  # carga diferida (ya quedo cargado tras new_session)
     original = Image.open(ruta).convert("RGB")
     sin_fondo = remove(original, session=session)  # RGBA con transparencia
     alpha = sin_fondo.split()[-1]
