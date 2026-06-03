@@ -38,9 +38,9 @@ class App:
         self.ruta_excel = None
 
         root.title("Editor de Fotos Fotochecks - DISECOD")
-        root.geometry("760x620")
+        root.geometry("820x780")
         root.configure(bg=COLOR_FONDO)
-        root.minsize(620, 520)
+        root.minsize(680, 660)
 
         cab = tk.Frame(root, bg=COLOR_FONDO)
         cab.pack(fill="x", padx=20, pady=(18, 8))
@@ -117,6 +117,62 @@ class App:
             tk.Radiobutton(medidas, text=f, variable=self.var_formato, value=f,
                            bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
                            activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
+
+        # --- Encuadre y fondo ---
+        op = tk.Frame(root, bg=COLOR_FONDO)
+        op.pack(fill="x", padx=20, pady=(2, 4))
+        cab_def = self.preset.get("cabeza_relativa", 0.68) if self.preset else 0.68
+        tk.Label(op, text="Acercamiento", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Label(op, text="mas cuerpo", bg=COLOR_FONDO, fg="#9a9a9a",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(8, 2))
+        self.var_zoom = tk.DoubleVar(value=cab_def)
+        tk.Scale(op, from_=0.45, to=0.85, resolution=0.01, orient="horizontal",
+                 variable=self.var_zoom, showvalue=False, length=150,
+                 bg=COLOR_FONDO, fg=COLOR_TEXTO, troughcolor="#2b2b2b",
+                 highlightthickness=0, sliderrelief="flat").pack(side="left")
+        tk.Label(op, text="rostro grande", bg=COLOR_FONDO, fg="#9a9a9a",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(2, 0))
+        self.var_fondo = tk.StringVar(value="blanco")
+        tk.Label(op, text="    Fondo", bg=COLOR_FONDO, fg="#CFCFCF").pack(side="left", padx=(16, 3))
+        for txt, val in (("Blanco", "blanco"), ("Transparente", "transparente")):
+            tk.Radiobutton(op, text=txt, variable=self.var_fondo, value=val,
+                           bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
+                           activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
+
+        # --- Correccion de color (automatica por foto) + anti-mancha de negros ---
+        col = tk.Frame(root, bg=COLOR_FONDO)
+        col.pack(fill="x", padx=20, pady=(2, 4))
+        tk.Label(col, text="Color:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.var_color_auto = tk.BooleanVar(value=False)
+        self.var_sat_auto = tk.BooleanVar(value=False)
+        tk.Checkbutton(col, text="Corregir tinte (auto)", variable=self.var_color_auto,
+                       bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
+                       activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left", padx=(8, 0))
+        tk.Checkbutton(col, text="Saturacion (auto)", variable=self.var_sat_auto,
+                       bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
+                       activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left", padx=(8, 0))
+        self.var_negros = tk.StringVar(value="0")
+        tk.Label(col, text="    Reducir negros", bg=COLOR_FONDO, fg="#CFCFCF").pack(side="left", padx=(12, 3))
+        tk.Entry(col, textvariable=self.var_negros, width=4, justify="center").pack(side="left")
+        tk.Label(col, text="(0-80, 0 = no tocar)", bg=COLOR_FONDO, fg="#7a7a7a",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(3, 0))
+
+        # --- Carpeta donde guardar (por defecto 'salida') ---
+        self.salida_default = core.SALIDA
+        self.carpeta_salida = None
+        dest = tk.Frame(root, bg=COLOR_FONDO)
+        dest.pack(fill="x", padx=20, pady=(2, 4))
+        self.btn_destino = tk.Button(dest, text="  Guardar en...  ",
+                                     command=self.elegir_destino, bg="#5a5a5a",
+                                     fg=COLOR_TEXTO, activebackground="#6e6e6e",
+                                     font=("Segoe UI", 10), relief="flat",
+                                     cursor="hand2", padx=10, pady=6)
+        self.btn_destino.pack(side="left")
+        self.var_destino = tk.StringVar(value="Se guarda en la carpeta 'salida'. Puedes elegir otra (ej. la del cliente).")
+        tk.Label(dest, textvariable=self.var_destino, bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
 
         # Excel de codigos (opcional): renombra cada foto al codigo del empleado
         # para que CardPresso la enlace sola.
@@ -203,6 +259,21 @@ class App:
             return None
         return b if 0.2 <= b <= 3.0 else None
 
+    def _leer_negros(self):
+        try:
+            v = int(self.var_negros.get())
+        except (ValueError, TypeError):
+            return 0
+        return max(0, min(80, v))
+
+    def elegir_destino(self):
+        if self.procesando:
+            return
+        d = filedialog.askdirectory(title="Elegir carpeta donde guardar las fotos")
+        if d:
+            self.carpeta_salida = Path(d)
+            self.var_destino.set("Se guarda en: " + d)
+
     def elegir_excel(self):
         if self.procesando:
             return
@@ -223,8 +294,22 @@ class App:
             self.var_excel.set("El Excel no tiene codigos validos. Revisa el archivo.")
             return
         self.ruta_excel = ruta
-        self.var_excel.set(
-            f"Excel cargado: {len(self.codigos)} codigos. Las fotos saldran renombradas.")
+        n = len(self.codigos)
+        self.var_excel.set(f"Excel cargado: {n} codigos. Las fotos saldran renombradas.")
+        # Mostrar QUE detecto, para que se entienda como funciona (duda de Mirza).
+        ejemplos = "\n".join("   %s  =  %s" % (r["codigo"], r["nombre"])
+                             for r in self.codigos[:3])
+        messagebox.showinfo(
+            "Excel cargado",
+            "Lei %d empleados del Excel.\n\n"
+            "Detecte sola la columna del CODIGO (la de numeros/DNI) y la del "
+            "NOMBRE.\n\nEjemplos:\n%s\n\n"
+            "Como funciona: el programa toma el NOMBRE DEL ARCHIVO de cada foto, "
+            "lo busca en la columna de nombres y guarda la foto con su codigo "
+            "(para que CardPresso la enlace).\n"
+            "- Las fotos que ya vienen nombradas con el codigo/DNI se respetan.\n"
+            "- Las que no encuentre con seguridad salen con su nombre original y "
+            "marcadas en rojo." % (n, ejemplos))
 
     def _leer_medidas(self):
         # Devuelve (ancho, alto) validos o None si el diseñador escribio algo raro.
@@ -290,15 +375,28 @@ class App:
                 return
         self.preset["ancho_px"], self.preset["alto_px"] = medidas
         self.preset["brillo_auto"] = self.var_brillo_auto.get()
-        self.preset["formato_salida"] = self.var_formato.get()
         if brillo is not None:
             self.preset["brillo"] = brillo
+        # Encuadre y fondo
+        self.preset["cabeza_relativa"] = float(self.var_zoom.get())
+        transparente = (self.var_fondo.get() == "transparente")
+        if transparente:
+            self.var_formato.set("PNG")  # la transparencia solo existe en PNG
+        self.preset["formato_salida"] = self.var_formato.get()
+        self.preset["fondo_transparente"] = transparente
+        # Color
+        self.preset["color_auto"] = self.var_color_auto.get()
+        self.preset["saturacion_auto"] = self.var_sat_auto.get()
+        self.preset["piso_negro"] = self._leer_negros()
+        # Carpeta destino (la elegida o la de por defecto)
+        core.SALIDA = self.carpeta_salida or self.salida_default
         self._guardar_ultimo(medidas[0], medidas[1], self.var_formato.get())
         self.limpiar_galeria()
         self.procesando = True
         self.btn_fotos.config(state="disabled")
         self.btn_carpeta.config(state="disabled")
         self.btn_excel.config(state="disabled")
+        self.btn_destino.config(state="disabled")
         self.barra.config(maximum=len(fotos), value=0)
         self.estado.set("Preparando modelo de IA...")
         threading.Thread(target=self.worker, args=(fotos,), daemon=True).start()
@@ -314,7 +412,8 @@ class App:
             self.cola.put(("inicio", len(fotos)))
             ok = 0
             usados = {}  # codigo -> archivo, para detectar duplicados
-            resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [], "duplicado": []}
+            resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [],
+                       "duplicado": [], "pixelado": []}
             for i, ruta in enumerate(fotos, 1):
                 try:
                     nombre_salida = None
@@ -334,10 +433,13 @@ class App:
                         else:
                             resumen["sin_match"].append(ruta.name)
                             revisar = True
-                    destino, hubo_cara = core.procesar_una(
+                    destino, hubo_cara, pixelado = core.procesar_una(
                         ruta, self.preset, self.session, nombre_salida)
                     if not hubo_cara:
                         resumen["sin_cara"].append(ruta.name)
+                        revisar = True
+                    if pixelado:
+                        resumen["pixelado"].append(ruta.name)
                         revisar = True
                     ok += 1
                     self.cola.put(("una", i, str(destino), revisar))
@@ -380,6 +482,7 @@ class App:
         self.btn_fotos.config(state="normal")
         self.btn_carpeta.config(state="normal")
         self.btn_excel.config(state="normal")
+        self.btn_destino.config(state="normal")
 
     # ---------- galeria ----------
     def limpiar_galeria(self):
@@ -444,6 +547,10 @@ class App:
                 partes.append(f"\n- Codigo duplicado ({len(resumen['duplicado'])}): "
                               + ", ".join(resumen["duplicado"][:8])
                               + (" ..." if len(resumen["duplicado"]) > 8 else ""))
+            if resumen["pixelado"]:
+                partes.append(f"\n- Salieron borrosas/poca resolucion ({len(resumen['pixelado'])}): "
+                              + ", ".join(resumen["pixelado"][:8])
+                              + (" ..." if len(resumen["pixelado"]) > 8 else ""))
         messagebox.showinfo("Resumen", "".join(partes))
 
 

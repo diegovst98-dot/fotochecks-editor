@@ -226,6 +226,71 @@ def recortar_region(img, left, top, ancho, alto, color_fondo):
     return lienzo
 
 
+def recortar_alpha(alpha, left, top, ancho, alto):
+    # Igual que recortar_region pero para la mascara (modo L); lo que sobra del
+    # borde queda transparente (0). Sirve para el modo de fondo transparente.
+    lienzo = Image.new("L", (ancho, alto), 0)
+    sx = max(0, left)
+    sy = max(0, top)
+    sx2 = min(alpha.width, left + ancho)
+    sy2 = min(alpha.height, top + alto)
+    if sx2 <= sx or sy2 <= sy:
+        return lienzo
+    lienzo.paste(alpha.crop((sx, sy, sx2, sy2)), (sx - left, sy - top))
+    return lienzo
+
+
+# ---------- correcciones de color (automaticas por foto) ----------
+# Como las fotos llegan de colores muy distintos (naranjas, rosadas...), un
+# ajuste fijo no sirve: cada foto se MIDE y se corrige sola hacia un mismo
+# objetivo. Asi un lote variado sale parejo sin tocar foto por foto.
+
+def _corregir_color(img, mask):
+    # Neutraliza el tinte (balance de blancos tipo "mundo gris") usando solo los
+    # pixeles de la persona, con limites para no matar el tono de piel. El fondo
+    # blanco no se toca.
+    arr = np.asarray(img).astype(np.float32)
+    sel = arr[mask]
+    if sel.shape[0] < 50:
+        return img
+    medias = sel.reshape(-1, 3).mean(axis=0)
+    gris = float(medias.mean())
+    ganancias = gris / np.clip(medias, 1.0, None)
+    ganancias = np.clip(ganancias, 0.85, 1.18)
+    corr = np.clip(arr * ganancias, 0, 255)
+    arr2 = arr.copy()
+    arr2[mask] = corr[mask]  # solo la persona; el fondo blanco queda intacto
+    return Image.fromarray(arr2.astype(np.uint8))
+
+
+def _corregir_saturacion(img, mask, objetivo):
+    # Lleva la saturacion promedio de la persona hacia un objetivo (cada foto
+    # sube o baja lo necesario). El blanco (saturacion 0) no se ve afectado.
+    arr = np.asarray(img).astype(np.float32)
+    sel = arr[mask].reshape(-1, 3)
+    if sel.shape[0] < 50:
+        return img
+    mx = sel.max(axis=1)
+    mn = sel.min(axis=1)
+    s = np.where(mx > 0, (mx - mn) / np.clip(mx, 1, None), 0)
+    media = float(s.mean())
+    if media < 0.01:
+        return img
+    factor = float(np.clip(objetivo / media, 0.7, 1.4))
+    return ImageEnhance.Color(img).enhance(factor)
+
+
+def _subir_negros(img, piso):
+    # Reduce la intensidad del negro: remapea [0..255] -> [piso..255], asi el
+    # negro puro no imprime como "mancha" pesada en la Evolis. El blanco se queda
+    # en blanco. Es una regla global (problema de la impresora, no de la foto).
+    if not piso or piso <= 0:
+        return img
+    arr = np.asarray(img).astype(np.float32)
+    arr = piso + arr * (255.0 - piso) / 255.0
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+
 def top_cabeza(alpha, ancho):
     # Fila más alta donde empieza la persona (tope del pelo), ignorando píxeles
     # sueltos: exige una cantidad mínima de píxeles en la fila para contar.
@@ -266,10 +331,12 @@ def fila_hombros(alpha, col_izq, col_der):
     return mejor
 
 
-def encuadrar(img_rgb, cara, alpha, preset):
+def caja_encuadre(img_rgb, cara, alpha, preset):
+    # Calcula la CAJA del recorte (left, top, ancho, alto). Devolver la caja (en
+    # vez de la imagen ya recortada) permite aplicar el mismo recorte a la imagen
+    # y a la mascara (para fondo transparente) y medir el color en el recorte.
     ancho_obj, alto_obj = preset["ancho_px"], preset["alto_px"]
     ratio = ancho_obj / alto_obj
-    color = preset["color_fondo"]
 
     if cara is None:
         # Sin cara detectada: recorte centrado al aspecto destino.
@@ -281,7 +348,7 @@ def encuadrar(img_rgb, cara, alpha, preset):
             crop_h = int(crop_w / ratio)
         left = (img_rgb.width - crop_w) // 2
         top = (img_rgb.height - crop_h) // 2
-        return recortar_region(img_rgb, left, top, crop_w, crop_h, color)
+        return left, top, crop_w, crop_h
 
     x, y, w, h = cara
     cx = x + w / 2
@@ -291,8 +358,8 @@ def encuadrar(img_rgb, cara, alpha, preset):
         cabeza = y  # sin silueta: usar tope de la cara
 
     # Ancho tope por CABEZA: la cabeza (tope del pelo al mentón) debe ocupar
-    # 'cabeza_relativa' del alto final. Esto manda el zoom estilo carnet cuando
-    # hay mucho cuerpo (la cabeza queda como elemento principal).
+    # 'cabeza_relativa' del alto final. Sube/baja este valor para acercar
+    # (rostro más grande) o alejar (se ve más cuerpo). Ajustable por trabajo.
     menton = y + h
     alto_cabeza = max(menton - cabeza, h)
     crop_h_cabeza = alto_cabeza / preset["cabeza_relativa"]
@@ -319,20 +386,18 @@ def encuadrar(img_rgb, cara, alpha, preset):
     # centrar en el eje de la persona para que llene parejo a izquierda y derecha.
     top = cabeza - preset["margen_superior"] * crop_h
     left = int(centro_x - crop_w / 2)
-    return recortar_region(img_rgb, left, int(top), int(crop_w), int(crop_h), color)
+    return left, int(top), int(crop_w), int(crop_h)
 
 
 def procesar_una(ruta, preset, session, nombre_salida=None):
     from rembg import remove  # carga diferida (ya quedo cargado tras new_session)
     original = Image.open(ruta).convert("RGB")
     sin_fondo = remove(original, session=session)  # RGBA con transparencia
-    alpha = sin_fondo.split()[-1]
 
     # Erosionar la mascara 2px: rembg deja un borde semitransparente de color
     # pelo/ropa que sobre blanco se ve como un fleco gris/negro alrededor de la
-    # silueta (los "trazos negros en el pelo"). Recortar ese borde y poner
-    # blanco limpio elimina el halo.
-    alpha = alpha.filter(ImageFilter.MinFilter(5))
+    # silueta. Recortar ese borde y poner blanco limpio elimina el halo.
+    alpha = sin_fondo.split()[-1].filter(ImageFilter.MinFilter(5))
     rgb_sin = sin_fondo.convert("RGB")
     sin_fondo = Image.merge("RGBA", (*rgb_sin.split(), alpha))
 
@@ -340,8 +405,19 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     compuesta = Image.alpha_composite(fondo, sin_fondo).convert("RGB")
 
     cara = detectar_cara(compuesta)
-    encuadrada = encuadrar(compuesta, cara, alpha, preset)
+    left, top, crop_w, crop_h = caja_encuadre(compuesta, cara, alpha, preset)
+    encuadrada = recortar_region(compuesta, left, top, crop_w, crop_h, preset["color_fondo"])
+    alpha_rec = recortar_alpha(alpha, left, top, crop_w, crop_h)
+    mask = np.asarray(alpha_rec) > 50  # persona vs fondo en el recorte
 
+    # Correcciones de color (cada una se mide en esta foto y se corrige sola)
+    if preset.get("color_auto"):
+        encuadrada = _corregir_color(encuadrada, mask)
+    if preset.get("saturacion_auto"):
+        encuadrada = _corregir_saturacion(encuadrada, mask, preset.get("saturacion_objetivo", 0.40))
+    encuadrada = _subir_negros(encuadrada, preset.get("piso_negro", 0))
+
+    # Brillo (manual o automatico)
     if preset.get("brillo_auto"):
         factor = _factor_brillo_auto(encuadrada, preset)
     else:
@@ -349,9 +425,20 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     if factor != 1.0:
         encuadrada = ImageEnhance.Brightness(encuadrada).enhance(factor)
 
-    final = encuadrada.resize((preset["ancho_px"], preset["alto_px"]), Image.LANCZOS)
+    ancho_obj, alto_obj = preset["ancho_px"], preset["alto_px"]
+    final = encuadrada.resize((ancho_obj, alto_obj), Image.LANCZOS)
+
+    # Aviso de pixelado: si hubo que estirar mucho el recorte (la parte util de
+    # la foto tenia pocos pixeles), la salida se vera borrosa.
+    escala = max(ancho_obj / max(crop_w, 1), alto_obj / max(crop_h, 1))
+    pixelado = escala > 1.5
 
     fmt = preset["formato_salida"].upper()
+    transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
+    if transparente:
+        a = alpha_rec.resize((ancho_obj, alto_obj), Image.LANCZOS)
+        final = Image.merge("RGBA", (*final.split(), a))
+
     ext = ".png" if fmt == "PNG" else ".jpg"
     stem = nombre_salida if nombre_salida else ruta.stem
     destino = SALIDA / (stem + ext)
@@ -359,7 +446,7 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
         final.save(destino, "JPEG", quality=95, dpi=(300, 300))
     else:
         final.save(destino, "PNG", dpi=(300, 300))
-    return destino, cara is not None
+    return destino, cara is not None, pixelado
 
 
 def recolectar_fotos():
@@ -406,7 +493,7 @@ def main():
     errores = []
     for i, ruta in enumerate(fotos, 1):
         try:
-            destino, hubo_cara = procesar_una(ruta, preset, session)
+            destino, hubo_cara, _pixelado = procesar_una(ruta, preset, session)
             ok += 1
             marca = "" if hubo_cara else "  (!) sin cara detectada, recorte centrado"
             print(f"[{i}/{len(fotos)}] {ruta.name} -> {destino.name}{marca}")
