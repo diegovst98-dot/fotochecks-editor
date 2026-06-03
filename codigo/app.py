@@ -498,6 +498,16 @@ class App:
             return
         try:
             img = Image.open(ruta)
+            # Si es PNG transparente, mostrarlo sobre BLANCO en la vista previa
+            # (asi se ve como saldra en un fotocheck claro, no con el fondo de la
+            # celda asomandose, que confunde).
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGBA")
+                fondo = Image.new("RGB", img.size, (255, 255, 255))
+                fondo.paste(img, mask=img.split()[-1])
+                img = fondo
+            else:
+                img = img.convert("RGB")
             img.thumbnail((150, 150))
             tkimg = ImageTk.PhotoImage(img)
         except Exception:

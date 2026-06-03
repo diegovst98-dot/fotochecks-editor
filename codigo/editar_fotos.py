@@ -447,12 +447,15 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     # Aviso de pixelado: si hubo que estirar mucho el recorte (la parte util de
     # la foto tenia pocos pixeles), la salida se vera borrosa.
     escala = max(ancho_obj / max(crop_w, 1), alto_obj / max(crop_h, 1))
-    pixelado = escala > 1.5
+    pixelado = escala > 1.8
 
     fmt = preset["formato_salida"].upper()
     transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if transparente:
+        # Borde nitido: binarizar el alfa tras el resize evita el cerco suave que
+        # el escalado reintroduce y que sobre fondos de color se ve como halo.
         a = alpha_rec.resize((ancho_obj, alto_obj), Image.LANCZOS)
+        a = a.point(lambda v: 255 if v >= 128 else 0)
         final = Image.merge("RGBA", (*final.split(), a))
 
     ext = ".png" if fmt == "PNG" else ".jpg"
