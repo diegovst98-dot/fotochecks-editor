@@ -280,6 +280,21 @@ def _corregir_saturacion(img, mask, objetivo):
     return ImageEnhance.Color(img).enhance(factor)
 
 
+def _limpiar_mascara(alpha, fuerza=1.0):
+    # Endurece la mascara del recorte para quitar el "cerco" o halo del fondo y
+    # los pelos sueltos semitransparentes que sobre blanco se ven como un fleco
+    # azulado/gris. Sube el contraste del canal alfa: lo intermedio (el halo) se
+    # va a 0 (fondo) o a 255 (persona). 'fuerza' 0..1 = mas o menos agresivo.
+    a = np.asarray(alpha).astype(np.float32) / 255.0
+    # ventana de transicion: mas angosta = mas duro (corta mas halo y pelitos)
+    centro = 0.55
+    medio = 0.30 * (1.0 - 0.6 * fuerza)  # fuerza alta -> ventana mas angosta
+    lo, hi = centro - medio, centro + medio
+    a = np.clip((a - lo) / max(hi - lo, 1e-3), 0.0, 1.0)
+    out = Image.fromarray((a * 255).astype(np.uint8))
+    return out.filter(ImageFilter.MinFilter(3))  # recorta 1px de borde residual
+
+
 def _subir_negros(img, piso):
     # Reduce la intensidad del negro: remapea [0..255] -> [piso..255], asi el
     # negro puro no imprime como "mancha" pesada en la Evolis. El blanco se queda
@@ -394,10 +409,11 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     original = Image.open(ruta).convert("RGB")
     sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
-    # Erosionar la mascara 2px: rembg deja un borde semitransparente de color
-    # pelo/ropa que sobre blanco se ve como un fleco gris/negro alrededor de la
-    # silueta. Recortar ese borde y poner blanco limpio elimina el halo.
-    alpha = sin_fondo.split()[-1].filter(ImageFilter.MinFilter(5))
+    # Limpiar el borde del recorte: rembg deja un cerco semitransparente (el
+    # fondo original asomandose por el pelo fino) que sobre blanco se ve como un
+    # halo azulado/gris con pelitos sueltos. Endurecer el alfa lo elimina.
+    fuerza = float(preset.get("limpieza_pelo", 1.0))
+    alpha = _limpiar_mascara(sin_fondo.split()[-1], fuerza)
     rgb_sin = sin_fondo.convert("RGB")
     sin_fondo = Image.merge("RGBA", (*rgb_sin.split(), alpha))
 
