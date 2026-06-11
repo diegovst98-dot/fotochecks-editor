@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import shutil
 import threading
 from pathlib import Path
 
@@ -23,6 +24,15 @@ COLOR_ALERTA = "#E74C3C"  # rojo para fotos a revisar
 ULTIMO = core.BASE / "ultimo.json"  # recuerda el ultimo tamano usado
 
 
+def _version():
+    # La version visible en el titulo: clave para soporte remoto ("¿que version
+    # tienes?") sin pedirle al usuario que busque archivos.
+    try:
+        return (Path(__file__).resolve().parent / "version.txt").read_text().strip()
+    except Exception:
+        return ""
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -31,13 +41,16 @@ class App:
         except Exception:
             self.preset = None
         self.session = None
+        self.fino = False         # True si el modelo fino de recorte esta activo
         self.thumbs = []          # referencias a las imagenes (evita que se borren)
         self.cola = queue.Queue()
         self.procesando = False
         self.codigos = []         # registros del Excel (codigo + nombre)
         self.ruta_excel = None
+        self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
 
-        root.title("Editor de Fotos Fotochecks - DISECOD")
+        v = _version()
+        root.title("Editor de Fotos Fotochecks - DISECOD" + (f"   v{v}" if v else ""))
         root.geometry("820x780")
         root.configure(bg=COLOR_FONDO)
         root.minsize(680, 660)
@@ -69,6 +82,15 @@ class App:
                                      relief="flat", cursor="hand2",
                                      padx=12, pady=10)
         self.btn_carpeta.pack(side="left", padx=(10, 0))
+        # Firmas: modo aparte SIN IA (la IA busca personas y rompe las firmas).
+        self.btn_firma = tk.Button(botones, text="  Firmas (tinta negra)  ",
+                                   command=self.elegir_firmas,
+                                   bg="#5a5a5a", fg=COLOR_TEXTO,
+                                   activebackground="#6e6e6e",
+                                   font=("Segoe UI", 11),
+                                   relief="flat", cursor="hand2",
+                                   padx=12, pady=10)
+        self.btn_firma.pack(side="left", padx=(10, 0))
         self.btn_abrir = tk.Button(botones, text="  Abrir resultados  ",
                                    command=self.abrir_salida,
                                    bg="#5a5a5a", fg=COLOR_TEXTO,
@@ -170,7 +192,7 @@ class App:
                                      font=("Segoe UI", 10), relief="flat",
                                      cursor="hand2", padx=10, pady=6)
         self.btn_destino.pack(side="left")
-        self.var_destino = tk.StringVar(value="Se guarda en la carpeta 'salida'. Puedes elegir otra (ej. la del cliente).")
+        self.var_destino = tk.StringVar(value="Se guarda en 'salida'. Elige otra carpeta ANTES de procesar (si lo haces despues, te ofrezco copiarlas).")
         tk.Label(dest, textvariable=self.var_destino, bg=COLOR_FONDO, fg="#CFCFCF",
                  font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
 
@@ -270,9 +292,27 @@ class App:
         if self.procesando:
             return
         d = filedialog.askdirectory(title="Elegir carpeta donde guardar las fotos")
-        if d:
-            self.carpeta_salida = Path(d)
-            self.var_destino.set("Se guarda en: " + d)
+        if not d:
+            return
+        self.carpeta_salida = Path(d)
+        core.SALIDA = self.carpeta_salida  # "Abrir resultados" apunta aqui ya
+        self.var_destino.set("Se guarda en: " + d)
+        # Si ya hay un lote procesado, ofrecer copiarlo: el orden natural de
+        # mucha gente es procesar primero y elegir la carpeta despues.
+        pendientes = [p for p in self.resultados_listos if Path(p).exists()
+                      and Path(p).parent != self.carpeta_salida]
+        if pendientes and messagebox.askyesno(
+                "Copiar lo ya procesado",
+                f"Ya procesaste {len(pendientes)} archivo(s) en este momento.\n\n"
+                f"¿Los copio tambien a la carpeta que elegiste?\n{d}"):
+            copiados = 0
+            for p in pendientes:
+                try:
+                    shutil.copy2(p, self.carpeta_salida / Path(p).name)
+                    copiados += 1
+                except Exception:
+                    pass
+            messagebox.showinfo("Listo", f"Copiados {copiados} archivo(s) a:\n{d}")
 
     def elegir_excel(self):
         if self.procesando:
@@ -348,6 +388,45 @@ class App:
         except Exception:
             pass
 
+    # ---------- firmas ----------
+    def elegir_firmas(self):
+        if self.procesando:
+            return
+        rutas = filedialog.askopenfilenames(
+            title="Elegir firmas (escaneo o foto, tinta oscura sobre papel claro)",
+            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff"),
+                       ("Todos los archivos", "*.*")])
+        if not rutas:
+            return
+        firmas = [Path(r) for r in rutas]
+        core.SALIDA = self.carpeta_salida or self.salida_default
+        self.resultados_listos = []
+        self.limpiar_galeria()
+        self.procesando = True
+        self._activar_botones(False)
+        self.barra.config(maximum=len(firmas), value=0)
+        self.estado.set("Procesando firmas...")
+        threading.Thread(target=self.worker_firmas, args=(firmas,), daemon=True).start()
+        self.root.after(100, self.revisar_cola)
+
+    def worker_firmas(self, firmas):
+        # Las firmas no usan la IA: salen al toque (umbral por luminosidad).
+        try:
+            core.SALIDA.mkdir(parents=True, exist_ok=True)
+            ok = 0
+            fallas = []
+            for i, ruta in enumerate(firmas, 1):
+                try:
+                    destino = core.procesar_firma(ruta)
+                    ok += 1
+                    self.cola.put(("una", i, str(destino), False))
+                except Exception as e:
+                    fallas.append(f"{ruta.name}: {e}")
+                    self.cola.put(("error_una", i, str(e)))
+            self.cola.put(("fin_firmas", ok, len(firmas), fallas))
+        except Exception as e:
+            self.cola.put(("fatal", str(e)))
+
     # ---------- procesar ----------
     def iniciar(self, fotos):
         fotos = [f for f in fotos if f.suffix.lower() in EXT and f.exists()]
@@ -390,24 +469,34 @@ class App:
         self.preset["piso_negro"] = self._leer_negros()
         # Carpeta destino (la elegida o la de por defecto)
         core.SALIDA = self.carpeta_salida or self.salida_default
+        self.resultados_listos = []
         self._guardar_ultimo(medidas[0], medidas[1], self.var_formato.get())
         self.limpiar_galeria()
         self.procesando = True
-        self.btn_fotos.config(state="disabled")
-        self.btn_carpeta.config(state="disabled")
-        self.btn_excel.config(state="disabled")
-        self.btn_destino.config(state="disabled")
+        self._activar_botones(False)
         self.barra.config(maximum=len(fotos), value=0)
-        self.estado.set("Preparando modelo de IA...")
+        if self.session is None and not core.modelo_fino_descargado():
+            self.estado.set("Mejorando el recorte de pelo: descargando el nuevo "
+                            "modelo (UNA sola vez, ~180 MB). Puede tardar...")
+        else:
+            self.estado.set("Preparando modelo de IA...")
         threading.Thread(target=self.worker, args=(fotos,), daemon=True).start()
         self.root.after(100, self.revisar_cola)
+
+    def _activar_botones(self, activo):
+        estado = "normal" if activo else "disabled"
+        for b in (self.btn_fotos, self.btn_carpeta, self.btn_firma,
+                  self.btn_excel, self.btn_destino):
+            b.config(state=estado)
 
     def worker(self, fotos):
         try:
             if self.preset is None:
                 self.preset = core.cargar_preset()
             if self.session is None:
-                self.session = core.new_session(self.preset["modelo_recorte"])
+                # Modelo fino (mejor calado de pelo); si no se puede descargar,
+                # cae solo al modelo clasico de siempre.
+                self.session, self.fino = core.sesion_recorte(self.preset)
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             self.cola.put(("inicio", len(fotos)))
             ok = 0
@@ -434,7 +523,8 @@ class App:
                             resumen["sin_match"].append(ruta.name)
                             revisar = True
                     destino, hubo_cara, pixelado = core.procesar_una(
-                        ruta, self.preset, self.session, nombre_salida)
+                        ruta, self.preset, self.session, nombre_salida,
+                        fino=self.fino)
                     if not hubo_cara:
                         resumen["sin_cara"].append(ruta.name)
                         revisar = True
@@ -458,13 +548,28 @@ class App:
                     self.estado.set(f"Procesando {msg[1]} fotos...")
                 elif tag == "una":
                     self.barra.config(value=msg[1])
+                    self.resultados_listos.append(msg[2])
                     self.agregar_miniatura(msg[2], msg[3])
                 elif tag == "error_una":
                     self.barra.config(value=msg[1])
                 elif tag == "fin":
                     ok, total, resumen = msg[1], msg[2], msg[3]
-                    self.estado.set(f"Listas: {ok} de {total}. Resultados en la carpeta 'salida'.")
+                    self.estado.set(f"Listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
                     self.mostrar_resumen(ok, total, resumen)
+                    self.terminar()
+                    self.abrir_salida()
+                    return
+                elif tag == "fin_firmas":
+                    ok, total, fallas = msg[1], msg[2], msg[3]
+                    self.estado.set(f"Firmas listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
+                    texto = (f"Se procesaron {ok} de {total} firma(s).\n"
+                             "Salen en PNG con tinta negra y fondo transparente, "
+                             "recortadas al trazo.")
+                    if fallas:
+                        texto += "\n\nNo se pudieron procesar:\n- " + "\n- ".join(fallas[:6])
+                        texto += ("\n\nConsejo: la firma debe verse oscura sobre "
+                                  "papel claro, sin arrugas fuertes.")
+                    messagebox.showinfo("Firmas", texto)
                     self.terminar()
                     self.abrir_salida()
                     return
@@ -479,10 +584,7 @@ class App:
 
     def terminar(self):
         self.procesando = False
-        self.btn_fotos.config(state="normal")
-        self.btn_carpeta.config(state="normal")
-        self.btn_excel.config(state="normal")
-        self.btn_destino.config(state="normal")
+        self._activar_botones(True)
 
     # ---------- galeria ----------
     def limpiar_galeria(self):

@@ -47,6 +47,27 @@ def new_session(*args, **kwargs):
     return _new_session(*args, **kwargs)
 
 
+# Modelo "fino": recorta el pelo mechon a mechon (isnet), sin el casco blanco
+# que dejaba u2net_human_seg sobre fondos de color. No viene en el ZIP original:
+# rembg lo descarga UNA sola vez (~180 MB, del release oficial de rembg) a la
+# carpeta modelo/. Si no se puede descargar (sin internet), se sigue usando el
+# modelo clasico de siempre.
+MODELO_FINO = "isnet-general-use"
+
+
+def modelo_fino_descargado():
+    return (_MODELO_DIR / (MODELO_FINO + ".onnx")).exists()
+
+
+def sesion_recorte(preset):
+    # Devuelve (session, fino). Intenta el modelo fino; si falla (descarga
+    # imposible, libreria vieja), cae al modelo clasico del config.
+    try:
+        return new_session(MODELO_FINO), True
+    except Exception:
+        return new_session(preset["modelo_recorte"]), False
+
+
 EXTENSIONES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
@@ -295,6 +316,15 @@ def _limpiar_mascara(alpha, fuerza=1.0):
     return out.filter(ImageFilter.MinFilter(3))  # recorta 1px de borde residual
 
 
+def _alfa_fino(alpha):
+    # El modelo fino ya separa el pelo mechon a mechon, asi que NO se endurece
+    # (eso destruiria justo el detalle ganado). Solo se limpia el "vaho" casi
+    # transparente que a veces queda en el fondo y se afirma lo casi opaco.
+    a = np.asarray(alpha).astype(np.float32)
+    a = np.clip((a - 20.0) * (255.0 / (235.0 - 20.0)), 0.0, 255.0)
+    return Image.fromarray(a.astype(np.uint8))
+
+
 def _subir_negros(img, piso):
     # Reduce la intensidad del negro: remapea [0..255] -> [piso..255], asi el
     # negro puro no imprime como "mancha" pesada en la Evolis. El blanco se queda
@@ -404,16 +434,20 @@ def caja_encuadre(img_rgb, cara, alpha, preset):
     return left, int(top), int(crop_w), int(crop_h)
 
 
-def procesar_una(ruta, preset, session, nombre_salida=None):
+def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     from rembg import remove  # carga diferida (ya quedo cargado tras new_session)
     original = Image.open(ruta).convert("RGB")
     sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
-    # Limpiar el borde del recorte: rembg deja un cerco semitransparente (el
-    # fondo original asomandose por el pelo fino) que sobre blanco se ve como un
-    # halo azulado/gris con pelitos sueltos. Endurecer el alfa lo elimina.
-    fuerza = float(preset.get("limpieza_pelo", 1.0))
-    alpha = _limpiar_mascara(sin_fondo.split()[-1], fuerza)
+    if fino:
+        # Modelo fino (isnet): el borde ya viene limpio pelo a pelo.
+        alpha = _alfa_fino(sin_fondo.split()[-1])
+    else:
+        # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
+        # original asomandose por el pelo fino) que sobre blanco se ve como un
+        # halo azulado/gris con pelitos sueltos. Endurecer el alfa lo elimina.
+        fuerza = float(preset.get("limpieza_pelo", 1.0))
+        alpha = _limpiar_mascara(sin_fondo.split()[-1], fuerza)
     rgb_sin = sin_fondo.convert("RGB")
     sin_fondo = Image.merge("RGBA", (*rgb_sin.split(), alpha))
 
@@ -452,10 +486,12 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     fmt = preset["formato_salida"].upper()
     transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if transparente:
-        # Borde nitido: binarizar el alfa tras el resize evita el cerco suave que
-        # el escalado reintroduce y que sobre fondos de color se ve como halo.
         a = alpha_rec.resize((ancho_obj, alto_obj), Image.LANCZOS)
-        a = a.point(lambda v: 255 if v >= 128 else 0)
+        if not fino:
+            # Con el modelo clasico el borde suave es fondo contaminado: se
+            # binariza para que sobre fondos de color no se vea como halo. Con
+            # el modelo fino NO: su borde suave es pelo real y se conserva.
+            a = a.point(lambda v: 255 if v >= 128 else 0)
         final = Image.merge("RGBA", (*final.split(), a))
 
     ext = ".png" if fmt == "PNG" else ".jpg"
@@ -466,6 +502,65 @@ def procesar_una(ruta, preset, session, nombre_salida=None):
     else:
         final.save(destino, "PNG", dpi=(300, 300))
     return destino, cara is not None, pixelado
+
+
+# ---------- firmas ----------
+# Una firma NO se procesa con la IA de personas (por eso salia rota): es tinta
+# oscura sobre papel claro, asi que se separa por luminosidad. Pasos: aplanar la
+# iluminacion (sombras tipicas de foto de celular), umbral automatico, borde
+# suave (antialias) y limpieza de motas de polvo/escaneo.
+
+def procesar_firma(ruta, nombre_salida=None):
+    img = Image.open(ruta).convert("RGB")
+    gris = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2GRAY)
+
+    # Aplanar iluminacion: estimar el papel con un cierre morfologico grande y
+    # dividir. Quita sombras y el tono del papel sin afectar la tinta.
+    k = max(15, (min(gris.shape) // 20) | 1)  # impar, proporcional a la imagen
+    nucleo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    papel = cv2.morphologyEx(gris, cv2.MORPH_CLOSE, nucleo)
+    plano = cv2.divide(gris, papel, scale=255)
+
+    # Umbral automatico (Otsu) y alfa con transicion corta (borde antialias).
+    # Ojo: para Otsu la tinta queda EN el valor t (inclusive), asi que la rampa
+    # va de t (tinta solida) a t+suavidad (papel), no centrada en t.
+    t, _ = cv2.threshold(plano, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    suavidad = max(8.0, (255.0 - t) * 0.25)
+    alfa = np.clip((t + suavidad - plano.astype(np.float32)) / suavidad, 0.0, 1.0)
+
+    # Quitar motas: manchitas diminutas que no son parte del trazo (se conserva
+    # todo lo que tenga un tamano razonable, como puntos de la i o tildes).
+    binaria = (alfa > 0.5).astype(np.uint8)
+    n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(binaria, connectivity=8)
+    area_tinta = stats[1:, cv2.CC_STAT_AREA].sum() if n > 1 else 0
+    if area_tinta:
+        minimo = max(6, int(area_tinta * 0.0005))
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] < minimo:
+                alfa[etiquetas == i] = 0.0
+
+    if not np.any(alfa > 0.5):
+        raise ValueError("No se encontro un trazo de tinta. La firma debe ser "
+                         "oscura sobre fondo claro (papel).")
+
+    # Recortar al trazo + margen (la firma queda lista para ponerla en el carnet).
+    ys, xs = np.where(alfa > 0.05)
+    m = max(10, int(max(alfa.shape) * 0.03))
+    y0, y1 = max(int(ys.min()) - m, 0), min(int(ys.max()) + m, alfa.shape[0] - 1)
+    x0, x1 = max(int(xs.min()) - m, 0), min(int(xs.max()) + m, alfa.shape[1] - 1)
+    alfa = alfa[y0:y1 + 1, x0:x1 + 1]
+
+    # Tinta negra pura sobre fondo transparente (PNG).
+    a8 = (alfa * 255).astype(np.uint8)
+    h, w = a8.shape
+    lienzo = np.zeros((h, w, 4), dtype=np.uint8)
+    lienzo[..., 3] = a8
+    final = Image.fromarray(lienzo, "RGBA")
+
+    stem = nombre_salida if nombre_salida else ruta.stem
+    destino = SALIDA / (stem + "_firma.png")
+    final.save(destino, "PNG", dpi=(300, 300))
+    return destino
 
 
 def recolectar_fotos():
@@ -503,8 +598,12 @@ def main():
         return
 
     SALIDA.mkdir(parents=True, exist_ok=True)
-    print(f"\nFotos a procesar: {len(fotos)}\nPreparando modelo de IA...\n")
-    session = new_session(preset["modelo_recorte"])
+    if modelo_fino_descargado():
+        print(f"\nFotos a procesar: {len(fotos)}\nPreparando modelo de IA...\n")
+    else:
+        print(f"\nFotos a procesar: {len(fotos)}\nDescargando mejora del recorte"
+              " de pelo (una sola vez, ~180 MB)...\n")
+    session, fino = sesion_recorte(preset)
 
     inicio = time.time()
     ok = 0
@@ -512,7 +611,8 @@ def main():
     errores = []
     for i, ruta in enumerate(fotos, 1):
         try:
-            destino, hubo_cara, _pixelado = procesar_una(ruta, preset, session)
+            destino, hubo_cara, _pixelado = procesar_una(ruta, preset, session,
+                                                         fino=fino)
             ok += 1
             marca = "" if hubo_cara else "  (!) sin cara detectada, recorte centrado"
             print(f"[{i}/{len(fotos)}] {ruta.name} -> {destino.name}{marca}")
