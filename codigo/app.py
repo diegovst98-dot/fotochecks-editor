@@ -496,7 +496,11 @@ class App:
             if self.session is None:
                 # Modelo fino (mejor calado de pelo); si no se puede descargar,
                 # cae solo al modelo clasico de siempre.
-                self.session, self.fino = core.sesion_recorte(self.preset)
+                self.session, self.fino = core.sesion_recorte(
+                    self.preset,
+                    lambda pct: self.cola.put(
+                        ("estado", "Descargando mejora del recorte de pelo "
+                                   f"(una sola vez)... {pct}%")))
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             self.cola.put(("inicio", len(fotos)))
             ok = 0
@@ -546,6 +550,8 @@ class App:
                 tag = msg[0]
                 if tag == "inicio":
                     self.estado.set(f"Procesando {msg[1]} fotos...")
+                elif tag == "estado":
+                    self.estado.set(msg[1])
                 elif tag == "una":
                     self.barra.config(value=msg[1])
                     self.resultados_listos.append(msg[2])
@@ -635,6 +641,12 @@ class App:
 
     def mostrar_resumen(self, ok, total, resumen):
         partes = [f"Se procesaron {ok} de {total} fotos."]
+        if not self.fino:
+            # Que el fallback NUNCA sea invisible: si no se pudo bajar el modelo
+            # nuevo, el recorte de pelo sale como antes y hay que avisarlo.
+            partes.append("\n\n(!) Se uso el recorte CLASICO de pelo: no se pudo "
+                          "descargar la mejora (revisa el internet y vuelve a "
+                          "procesar para intentarlo de nuevo).")
         n_rev = sum(len(v) for v in resumen.values())
         if self.codigos:
             renombradas = ok - len(resumen["sin_match"]) - len(resumen["ambiguo"]) - len(resumen["duplicado"])

@@ -49,20 +49,67 @@ def new_session(*args, **kwargs):
 
 # Modelo "fino": recorta el pelo mechon a mechon (isnet), sin el casco blanco
 # que dejaba u2net_human_seg sobre fondos de color. No viene en el ZIP original:
-# rembg lo descarga UNA sola vez (~180 MB, del release oficial de rembg) a la
-# carpeta modelo/. Si no se puede descargar (sin internet), se sigue usando el
-# modelo clasico de siempre.
+# se descarga UNA sola vez (~180 MB, del release oficial de rembg) a la carpeta
+# modelo/. Si no se puede descargar (sin internet), se sigue usando el modelo
+# clasico de siempre.
 MODELO_FINO = "isnet-general-use"
+URL_MODELO_FINO = ("https://github.com/danielgatis/rembg/releases/download/"
+                   "v0.0.0/" + MODELO_FINO + ".onnx")
 
 
 def modelo_fino_descargado():
     return (_MODELO_DIR / (MODELO_FINO + ".onnx")).exists()
 
 
-def sesion_recorte(preset):
-    # Devuelve (session, fino). Intenta el modelo fino; si falla (descarga
-    # imposible, libreria vieja), cae al modelo clasico del config.
+def descargar_modelo_fino(progreso=None):
+    # Descarga el modelo fino con el MISMO mecanismo del lanzador (urllib +
+    # certificados de certifi), porque la descarga interna de rembg falla
+    # dentro del .exe congelado. Atomica: baja a .tmp, valida el tamano y
+    # recien lo pone en su sitio. 'progreso' recibe el porcentaje (0-100).
+    import ssl
+    import urllib.request
+    if modelo_fino_descargado():
+        return
+    _MODELO_DIR.mkdir(parents=True, exist_ok=True)
+    destino = _MODELO_DIR / (MODELO_FINO + ".onnx")
+    tmp = destino.with_suffix(".onnx.tmp")
     try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+    req = urllib.request.Request(URL_MODELO_FINO,
+                                 headers={"User-Agent": "FotochecksEditor"})
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as r, \
+                open(tmp, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            leido = 0
+            ultimo = -1
+            while True:
+                bloque = r.read(256 * 1024)
+                if not bloque:
+                    break
+                f.write(bloque)
+                leido += len(bloque)
+                if progreso and total:
+                    pct = int(leido * 100 / total)
+                    if pct != ultimo:
+                        ultimo = pct
+                        progreso(pct)
+        if tmp.stat().st_size < 100 * 1024 * 1024:
+            raise ValueError("descarga incompleta")
+        tmp.replace(destino)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def sesion_recorte(preset, progreso=None):
+    # Devuelve (session, fino). Intenta el modelo fino (descargandolo si hace
+    # falta); si falla, cae al modelo clasico del config sin romper nada.
+    try:
+        descargar_modelo_fino(progreso)
         return new_session(MODELO_FINO), True
     except Exception:
         return new_session(preset["modelo_recorte"]), False
@@ -325,6 +372,18 @@ def _alfa_fino(alpha):
     return Image.fromarray(a.astype(np.uint8))
 
 
+def _descontaminar(img, alpha):
+    # En los pixeles semitransparentes (pelo fino) el color trae mezclado el
+    # fondo original de la foto; sobre el diseño de color del fotocheck eso se
+    # ve como parches claros. Aqui cada pixel del borde recibe el color REAL
+    # del pelo (estimacion de primer plano de pymatting, ya viene en el .exe).
+    from pymatting import estimate_foreground_ml
+    im = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
+    a = np.asarray(alpha, dtype=np.float64) / 255.0
+    fg = estimate_foreground_ml(im, a)
+    return Image.fromarray((np.clip(fg, 0.0, 1.0) * 255).astype(np.uint8))
+
+
 def _subir_negros(img, piso):
     # Reduce la intensidad del negro: remapea [0..255] -> [piso..255], asi el
     # negro puro no imprime como "mancha" pesada en la Evolis. El blanco se queda
@@ -460,6 +519,20 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     alpha_rec = recortar_alpha(alpha, left, top, crop_w, crop_h)
     mask = np.asarray(alpha_rec) > 50  # persona vs fondo en el recorte
 
+    fmt = preset["formato_salida"].upper()
+    transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
+    if transparente and fino:
+        # PNG transparente: la base de color NO puede ser la compuesta sobre
+        # blanco, porque el blanco queda mezclado en el borde semitransparente
+        # del pelo y sobre el diseño de color del fotocheck se ve como parches
+        # claros. Se recorta el ORIGINAL y se descontamina el borde.
+        try:
+            base = recortar_region(original, left, top, crop_w, crop_h,
+                                   preset["color_fondo"])
+            encuadrada = _descontaminar(base, alpha_rec)
+        except Exception:
+            pass  # si pymatting fallara, queda la compuesta (como antes)
+
     # Correcciones de color (cada una se mide en esta foto y se corrige sola)
     if preset.get("color_auto"):
         encuadrada = _corregir_color(encuadrada, mask)
@@ -483,8 +556,6 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     escala = max(ancho_obj / max(crop_w, 1), alto_obj / max(crop_h, 1))
     pixelado = escala > 1.8
 
-    fmt = preset["formato_salida"].upper()
-    transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if transparente:
         a = alpha_rec.resize((ancho_obj, alto_obj), Image.LANCZOS)
         if not fino:
