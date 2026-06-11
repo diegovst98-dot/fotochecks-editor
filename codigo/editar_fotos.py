@@ -364,24 +364,51 @@ def _limpiar_mascara(alpha, fuerza=1.0):
 
 
 def _alfa_fino(alpha):
-    # El modelo fino ya separa el pelo mechon a mechon, asi que NO se endurece
-    # (eso destruiria justo el detalle ganado). Solo se limpia el "vaho" casi
-    # transparente que a veces queda en el fondo y se afirma lo casi opaco.
+    # El modelo fino ya separa el pelo mechon a mechon; aqui solo se modela la
+    # transicion (calibrado con fotos reales de clientes, 2026-06-11):
+    #  1) Curva suave 40-210: la "neblina" de alfa bajo (velo que el modelo
+    #     regala alrededor del pelo) se va; el trazo firme queda intacto.
+    #  2) Histeresis: una mancha semitransparente que NO toca zona solida es
+    #     neblina del modelo (no es pelo) y se elimina entera.
     a = np.asarray(alpha).astype(np.float32)
-    a = np.clip((a - 20.0) * (255.0 / (235.0 - 20.0)), 0.0, 255.0)
-    return Image.fromarray(a.astype(np.uint8))
+    x = np.clip((a - 40.0) / (210.0 - 40.0), 0.0, 1.0)
+    s = (x * x * (3.0 - 2.0 * x)) * 255.0
+    cand = (s > 12).astype(np.uint8)
+    nucleo = (s > 200).astype(np.uint8)
+    _n, lab = cv2.connectedComponents(cand, connectivity=8)
+    keep = np.unique(lab[nucleo.astype(bool)])
+    s = np.where(np.isin(lab, keep) & (lab > 0), s, 0.0)
+    return Image.fromarray(s.astype(np.uint8))
 
 
 def _descontaminar(img, alpha):
-    # En los pixeles semitransparentes (pelo fino) el color trae mezclado el
-    # fondo original de la foto; sobre el diseño de color del fotocheck eso se
-    # ve como parches claros. Aqui cada pixel del borde recibe el color REAL
-    # del pelo (estimacion de primer plano de pymatting, ya viene en el .exe).
-    from pymatting import estimate_foreground_ml
-    im = np.asarray(img.convert("RGB"), dtype=np.float64) / 255.0
-    a = np.asarray(alpha, dtype=np.float64) / 255.0
-    fg = estimate_foreground_ml(im, a)
-    return Image.fromarray((np.clip(fg, 0.0, 1.0) * 255).astype(np.uint8))
+    # El borde del recorte trae el color de la TRANSICION de la foto original
+    # (pelo mezclado con el fondo claro): sobre el diseño de color del
+    # fotocheck se ve como un filo palido pegado a la silueta. Arreglo de
+    # retocador: el anillo exterior (~2 px pegados al fondo) y todo pixel
+    # semitransparente toman el color del interior solido mas cercano. La
+    # FORMA (el alfa) no se toca, solo el color.
+    img_np = np.asarray(img.convert("RGB"))
+    a8 = np.asarray(alpha)
+    fuera = (a8 < 30).astype(np.uint8)
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cerca = cv2.dilate(fuera, k3, iterations=2).astype(bool)
+    reemplazar = (a8 > 0) & (cerca | (a8 < 200))
+    interior = ((a8 >= 200) & ~cerca).astype(np.uint8)
+    if not interior.any():
+        interior = (a8 >= 128).astype(np.uint8)
+        if not interior.any():
+            return img.convert("RGB")
+    # distancia con etiquetas: para cada pixel, CUAL es su interior mas cercano
+    _d, labels = cv2.distanceTransformWithLabels(
+        1 - interior, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    coords = np.argwhere(interior == 1)  # mismo orden (fila a fila) que labels
+    mapped = np.clip(labels - 1, 0, len(coords) - 1)
+    ys, xs = coords[:, 0], coords[:, 1]
+    ext = img_np[ys[mapped], xs[mapped]]
+    out = img_np.copy()
+    out[reemplazar] = ext[reemplazar]
+    return Image.fromarray(out)
 
 
 def _subir_negros(img, piso):
