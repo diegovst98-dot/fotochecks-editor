@@ -383,6 +383,32 @@ def _alfa_fino(alpha):
     return Image.fromarray(s.astype(np.uint8))
 
 
+def _quitar_fondo_atrapado(img_np, a8):
+    # Bolsones del fondo original atrapados entre mechones que el modelo marca
+    # como persona (quedan OPACOS y con el color de la pared: el "pedazo de
+    # color" pegado al pelo). Se detectan con 3 condiciones a la vez, para no
+    # tocar ropa clara: (1) color parecido al fondo original, (2) cerca del
+    # exterior del recorte, (3) rodeados de pelo oscuro. Se vuelven
+    # transparentes con atenuacion suave: el diseño del carnet debe verse a
+    # traves de los huecos del peinado.
+    fuera = (a8 < 30)
+    if fuera.sum() < 500:
+        return a8  # casi no hay fondo visible: nada que medir
+    fondo_color = np.median(img_np[fuera].reshape(-1, 3), axis=0)
+    dif = np.abs(img_np.astype(np.float32) - fondo_color).max(axis=2)
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cerca_fuera = cv2.dilate(fuera.astype(np.uint8), k3, iterations=25).astype(bool)
+    oscuro = (img_np.mean(axis=2) < 110)
+    cerca_oscuro = cv2.dilate(oscuro.astype(np.uint8), k3, iterations=8).astype(bool)
+    zona = (a8 > 0) & cerca_fuera & cerca_oscuro
+    # factor 0 (color = fondo puro) a 1 (distinto del fondo)
+    x = np.clip((dif - 12.0) / (38.0 - 12.0), 0.0, 1.0)
+    factor = x * x * (3.0 - 2.0 * x)
+    a = a8.astype(np.float32)
+    a[zona] = a[zona] * factor[zona]
+    return a.astype(np.uint8)
+
+
 def _descontaminar(img, alpha):
     # El borde del recorte trae el color de la TRANSICION de la foto original
     # (pelo mezclado con el fondo claro): sobre el diseño de color del
@@ -530,6 +556,8 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     if fino:
         # Modelo fino (isnet): el borde ya viene limpio pelo a pelo.
         alpha = _alfa_fino(sin_fondo.split()[-1])
+        alpha = Image.fromarray(_quitar_fondo_atrapado(np.asarray(original),
+                                                       np.asarray(alpha)))
     else:
         # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
         # original asomandose por el pelo fino) que sobre blanco se ve como un
@@ -550,17 +578,24 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
 
     fmt = preset["formato_salida"].upper()
     transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
-    if transparente and fino:
-        # PNG transparente: la base de color NO puede ser la compuesta sobre
-        # blanco, porque el blanco queda mezclado en el borde semitransparente
-        # del pelo y sobre el diseño de color del fotocheck se ve como parches
-        # claros. Se recorta el ORIGINAL y se descontamina el borde.
+    if fino:
+        # Base de color limpia para AMBOS fondos (blanco y transparente): se
+        # recorta el ORIGINAL (no la compuesta, que ya trae el blanco mezclado
+        # en el borde) y se descontamina: el anillo del contorno toma el color
+        # real del pelo. Recien despues, si el fondo es blanco, se compone.
         try:
             base = recortar_region(original, left, top, crop_w, crop_h,
                                    preset["color_fondo"])
-            encuadrada = _descontaminar(base, alpha_rec)
+            limpia = _descontaminar(base, alpha_rec)
+            if transparente:
+                encuadrada = limpia
+            else:
+                lienzo = Image.new("RGBA", limpia.size,
+                                   tuple(preset["color_fondo"]) + (255,))
+                con_alfa = Image.merge("RGBA", (*limpia.split(), alpha_rec))
+                encuadrada = Image.alpha_composite(lienzo, con_alfa).convert("RGB")
         except Exception:
-            pass  # si pymatting fallara, queda la compuesta (como antes)
+            pass  # si algo fallara, queda la compuesta (como antes)
 
     # Correcciones de color (cada una se mide en esta foto y se corrige sola)
     if preset.get("color_auto"):
