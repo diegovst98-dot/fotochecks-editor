@@ -364,49 +364,31 @@ def _limpiar_mascara(alpha, fuerza=1.0):
 
 
 def _alfa_fino(alpha):
-    # Borde FIRME con antialias fino (calibrado con fotos reales, 2026-06-11).
-    # Leccion aprendida: cualquier zona semitransparente ancha se ve mal sobre
-    # ALGUN fondo (si trae el color del fondo original se nota sobre oscuro; si
-    # se recolorea con el color del pelo se nota como humo sobre blanco). Por
-    # eso la transicion se concentra en una ventana angosta (110-160): toda la
-    # neblina muere, el borde queda anti-aliased y los mechones se conservan
-    # porque la silueta solida de isnet ya tiene forma de pelo.
+    # Silueta "PEINADO ORDENADO" (decision de producto con Diego, 2026-06-11):
+    # para un fotocheck no hace falta conservar cada pelo suelto; un contorno
+    # limpio y ordenado se ve mejor y elimina de raiz los defectos de borde
+    # (neblina, bolsones de fondo entre mechones, filos de color).
+    # Pasos: 1) borde firme (smoothstep 110-160: fuera la neblina del modelo),
+    # 2) apertura morfologica: retira mechones/frizz mas delgados que ~1% del
+    #    lado menor de la foto (los huecos con color del fondo se van con
+    #    ellos; aretes y monturas de lentes son mas gruesos y sobreviven),
+    # 3) limpiar islas sueltas, 4) contorno suavizado con antialias de 1-2px.
     a = np.asarray(alpha).astype(np.float32)
     x = np.clip((a - 110.0) / (160.0 - 110.0), 0.0, 1.0)
     s = (x * x * (3.0 - 2.0 * x)) * 255.0
-    # Histeresis: una mancha que NO toca zona solida es ruido y se va entera.
-    cand = (s > 12).astype(np.uint8)
-    nucleo = (s > 200).astype(np.uint8)
-    _n, lab = cv2.connectedComponents(cand, connectivity=8)
-    keep = np.unique(lab[nucleo.astype(bool)])
-    s = np.where(np.isin(lab, keep) & (lab > 0), s, 0.0)
+    binaria = (s > 127).astype(np.uint8)
+    r = max(2, round(min(binaria.shape) * 0.005))
+    nucleo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    abierta = cv2.morphologyEx(binaria, cv2.MORPH_OPEN, nucleo)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(abierta, connectivity=8)
+    if n > 1:
+        area_max = stats[1:, cv2.CC_STAT_AREA].max()
+        keep = [i for i in range(1, n)
+                if stats[i, cv2.CC_STAT_AREA] >= max(200, area_max * 0.005)]
+        abierta = np.isin(lab, keep).astype(np.uint8)
+    suave = cv2.GaussianBlur(abierta.astype(np.float32), (0, 0), max(1.2, r * 0.45))
+    s = np.clip((suave - 0.40) / 0.20, 0.0, 1.0) * 255.0
     return Image.fromarray(s.astype(np.uint8))
-
-
-def _quitar_fondo_atrapado(img_np, a8):
-    # Bolsones del fondo original atrapados entre mechones que el modelo marca
-    # como persona (quedan OPACOS y con el color de la pared: el "pedazo de
-    # color" pegado al pelo). Se detectan con 3 condiciones a la vez, para no
-    # tocar ropa clara: (1) color parecido al fondo original, (2) cerca del
-    # exterior del recorte, (3) rodeados de pelo oscuro. Se vuelven
-    # transparentes con atenuacion suave: el diseño del carnet debe verse a
-    # traves de los huecos del peinado.
-    fuera = (a8 < 30)
-    if fuera.sum() < 500:
-        return a8  # casi no hay fondo visible: nada que medir
-    fondo_color = np.median(img_np[fuera].reshape(-1, 3), axis=0)
-    dif = np.abs(img_np.astype(np.float32) - fondo_color).max(axis=2)
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cerca_fuera = cv2.dilate(fuera.astype(np.uint8), k3, iterations=25).astype(bool)
-    oscuro = (img_np.mean(axis=2) < 110)
-    cerca_oscuro = cv2.dilate(oscuro.astype(np.uint8), k3, iterations=8).astype(bool)
-    zona = (a8 > 0) & cerca_fuera & cerca_oscuro
-    # factor 0 (color = fondo puro) a 1 (distinto del fondo)
-    x = np.clip((dif - 12.0) / (38.0 - 12.0), 0.0, 1.0)
-    factor = x * x * (3.0 - 2.0 * x)
-    a = a8.astype(np.float32)
-    a[zona] = a[zona] * factor[zona]
-    return a.astype(np.uint8)
 
 
 def _descontaminar(img, alpha):
@@ -554,10 +536,8 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
     if fino:
-        # Modelo fino (isnet): el borde ya viene limpio pelo a pelo.
+        # Modelo fino (isnet): borde firme + peinado ordenado.
         alpha = _alfa_fino(sin_fondo.split()[-1])
-        alpha = Image.fromarray(_quitar_fondo_atrapado(np.asarray(original),
-                                                       np.asarray(alpha)))
     else:
         # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
         # original asomandose por el pelo fino) que sobre blanco se ve como un
