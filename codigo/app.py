@@ -3,10 +3,11 @@ import os
 import queue
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from PIL import Image, ImageTk
 
@@ -21,7 +22,9 @@ COLOR_LIMA = "#E7F849"
 COLOR_TEXTO = "#FFFFFF"
 COLOR_ALERTA = "#E74C3C"  # rojo para fotos a revisar
 
-ULTIMO = core.BASE / "ultimo.json"  # recuerda el ultimo tamano usado
+ULTIMO = core.BASE / "ultimo.json"      # recuerda el ultimo tamano usado
+CLIENTES = core.BASE / "clientes.json"  # configuracion guardada por cliente
+SIN_CLIENTE = "(sin cliente)"
 
 
 def _version():
@@ -48,6 +51,10 @@ class App:
         self.codigos = []         # registros del Excel (codigo + nombre)
         self.ruta_excel = None
         self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
+        self.rev_fotos = []          # fotos elegidas en la pestaña Revisar pedido
+        self.clientes = self._cargar_clientes()
+        self.var_excel = tk.StringVar(
+            value="Opcional: las fotos salen con su nombre original.")
 
         v = _version()
         root.title("Editor de Fotos Fotochecks - DISECOD" + (f"   v{v}" if v else ""))
@@ -64,7 +71,49 @@ class App:
                  bg=COLOR_FONDO, fg="#CFCFCF",
                  font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
 
-        botones = tk.Frame(root, bg=COLOR_FONDO)
+        # --- Pestañas: cada tarea tiene su espacio, sin amontonar controles ---
+        estilo = ttk.Style(root)
+        try:
+            estilo.theme_use("default")
+        except Exception:
+            pass
+        estilo.configure("TNotebook", background=COLOR_FONDO, borderwidth=0)
+        estilo.configure("TNotebook.Tab", font=("Segoe UI", 11, "bold"),
+                         padding=(18, 8))
+        estilo.map("TNotebook.Tab",
+                   background=[("selected", COLOR_LILA), ("!selected", "#4a4a4a")],
+                   foreground=[("selected", "#1d1d1d"), ("!selected", "#FFFFFF")])
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill="x", padx=20, pady=(4, 0))
+        self.tab_fotos = tk.Frame(self.nb, bg=COLOR_FONDO)
+        self.tab_revision = tk.Frame(self.nb, bg=COLOR_FONDO)
+        self.tab_firmas = tk.Frame(self.nb, bg=COLOR_FONDO)
+        self.nb.add(self.tab_fotos, text="Procesar fotos")
+        self.nb.add(self.tab_revision, text="Revisar pedido")
+        self.nb.add(self.tab_firmas, text="Firmas")
+
+        # --- Cliente (configuracion guardada por cliente recurrente) ---
+        fila_cli = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
+        fila_cli.pack(fill="x", padx=20, pady=(10, 2))
+        tk.Label(fila_cli, text="Cliente:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.var_cliente = tk.StringVar(value=SIN_CLIENTE)
+        self.combo_cliente = ttk.Combobox(fila_cli, textvariable=self.var_cliente,
+                                          state="readonly", width=28,
+                                          font=("Segoe UI", 10))
+        self.combo_cliente.pack(side="left", padx=(8, 6))
+        self.combo_cliente.bind("<<ComboboxSelected>>", self._al_elegir_cliente)
+        self._refrescar_clientes()
+        self.btn_guardar_cliente = tk.Button(
+            fila_cli, text=" Guardar cliente ", command=self.guardar_cliente,
+            bg="#5a5a5a", fg=COLOR_TEXTO, activebackground="#6e6e6e",
+            font=("Segoe UI", 9), relief="flat", cursor="hand2", padx=8, pady=4)
+        self.btn_guardar_cliente.pack(side="left")
+        tk.Label(fila_cli, text="Elige un cliente y se aplica su configuracion (medida, fondo, etc.).",
+                 bg=COLOR_FONDO, fg="#7a7a7a",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(10, 0))
+
+        botones = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         botones.pack(fill="x", padx=20, pady=8)
         self.btn_fotos = tk.Button(botones, text="  Elegir fotos  ",
                                    command=self.elegir_fotos,
@@ -82,15 +131,6 @@ class App:
                                      relief="flat", cursor="hand2",
                                      padx=12, pady=10)
         self.btn_carpeta.pack(side="left", padx=(10, 0))
-        # Firmas: modo aparte SIN IA (la IA busca personas y rompe las firmas).
-        self.btn_firma = tk.Button(botones, text="  Firmas (tinta negra)  ",
-                                   command=self.elegir_firmas,
-                                   bg="#5a5a5a", fg=COLOR_TEXTO,
-                                   activebackground="#6e6e6e",
-                                   font=("Segoe UI", 11),
-                                   relief="flat", cursor="hand2",
-                                   padx=12, pady=10)
-        self.btn_firma.pack(side="left", padx=(10, 0))
         self.btn_abrir = tk.Button(botones, text="  Abrir resultados  ",
                                    command=self.abrir_salida,
                                    bg="#5a5a5a", fg=COLOR_TEXTO,
@@ -99,12 +139,21 @@ class App:
                                    relief="flat", cursor="hand2",
                                    padx=12, pady=10)
         self.btn_abrir.pack(side="right")
+        # PDF para que el cliente apruebe nombres/codigos ANTES de imprimir.
+        self.btn_aprobacion = tk.Button(botones, text="  Hoja de aprobacion (PDF)  ",
+                                        command=self.generar_aprobacion,
+                                        bg="#5a5a5a", fg=COLOR_TEXTO,
+                                        activebackground="#6e6e6e",
+                                        font=("Segoe UI", 11),
+                                        relief="flat", cursor="hand2",
+                                        padx=12, pady=10, state="disabled")
+        self.btn_aprobacion.pack(side="right", padx=(0, 10))
 
         # Tamano de salida editable (en pixeles), por si cada trabajo usa otra
         # medida. Recuerda el ultimo usado (tamano y formato) entre sesiones.
         ultimo = self._cargar_ultimo()
         ancho_def, alto_def = ultimo["ancho"], ultimo["alto"]
-        medidas = tk.Frame(root, bg=COLOR_FONDO)
+        medidas = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         medidas.pack(fill="x", padx=20, pady=(2, 4))
         tk.Label(medidas, text="Tamano de salida:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
                  font=("Segoe UI", 10, "bold")).pack(side="left")
@@ -141,7 +190,7 @@ class App:
                            activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
 
         # --- Encuadre y fondo ---
-        op = tk.Frame(root, bg=COLOR_FONDO)
+        op = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         op.pack(fill="x", padx=20, pady=(2, 4))
         cab_def = self.preset.get("cabeza_relativa", 0.68) if self.preset else 0.68
         tk.Label(op, text="Acercamiento", bg=COLOR_FONDO, fg=COLOR_TEXTO,
@@ -163,7 +212,7 @@ class App:
                            activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
 
         # --- Correccion de color (automatica por foto) + anti-mancha de negros ---
-        col = tk.Frame(root, bg=COLOR_FONDO)
+        col = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         col.pack(fill="x", padx=20, pady=(2, 4))
         tk.Label(col, text="Color:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
                  font=("Segoe UI", 10, "bold")).pack(side="left")
@@ -184,7 +233,7 @@ class App:
         # --- Carpeta donde guardar (por defecto 'salida') ---
         self.salida_default = core.SALIDA
         self.carpeta_salida = None
-        dest = tk.Frame(root, bg=COLOR_FONDO)
+        dest = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         dest.pack(fill="x", padx=20, pady=(2, 4))
         self.btn_destino = tk.Button(dest, text="  Guardar en...  ",
                                      command=self.elegir_destino, bg="#5a5a5a",
@@ -198,7 +247,7 @@ class App:
 
         # Excel de codigos (opcional): renombra cada foto al codigo del empleado
         # para que CardPresso la enlace sola.
-        excel_row = tk.Frame(root, bg=COLOR_FONDO)
+        excel_row = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         excel_row.pack(fill="x", padx=20, pady=(2, 4))
         self.btn_excel = tk.Button(excel_row, text="  Elegir Excel de codigos  ",
                                    command=self.elegir_excel,
@@ -208,10 +257,12 @@ class App:
                                    relief="flat", cursor="hand2",
                                    padx=10, pady=6)
         self.btn_excel.pack(side="left")
-        self.var_excel = tk.StringVar(
-            value="Opcional: las fotos salen con su nombre original.")
         tk.Label(excel_row, textvariable=self.var_excel, bg=COLOR_FONDO,
                  fg="#CFCFCF", font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
+
+        # --- Contenido de la pestaña "Revisar pedido" y "Firmas" ---
+        self._armar_tab_revision()
+        self._armar_tab_firmas()
 
         self.estado = tk.StringVar(value="Elige las fotos para empezar.")
         tk.Label(root, textvariable=self.estado, bg=COLOR_FONDO, fg=COLOR_LIMA,
@@ -409,6 +460,241 @@ class App:
         threading.Thread(target=self.worker_firmas, args=(firmas,), daemon=True).start()
         self.root.after(100, self.revisar_cola)
 
+    # ---------- pestañas nuevas ----------
+    def _armar_tab_revision(self):
+        t = self.tab_revision
+        tk.Label(t, text="Revisa lo que mando el cliente ANTES de producir: detecta fotos "
+                         "faltantes, borrosas o que no cruzan con su lista,",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(12, 0))
+        tk.Label(t, text="y arma EL MENSAJE listo para pedirle todo de una sola vez por WhatsApp.",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20)
+
+        fila1 = tk.Frame(t, bg=COLOR_FONDO)
+        fila1.pack(fill="x", padx=20, pady=(10, 4))
+        tk.Label(fila1, text="1.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_rev_fotos = tk.Button(fila1, text="  Elegir las fotos del cliente  ",
+                                       command=self.elegir_fotos_revision,
+                                       bg=COLOR_LILA, fg="#1d1d1d",
+                                       activebackground="#b3a6fa",
+                                       font=("Segoe UI", 11, "bold"),
+                                       relief="flat", cursor="hand2", padx=12, pady=8)
+        self.btn_rev_fotos.pack(side="left")
+        self.btn_rev_carpeta = tk.Button(fila1, text="  o una carpeta  ",
+                                         command=self.elegir_carpeta_revision,
+                                         bg="#5a5a5a", fg=COLOR_TEXTO,
+                                         activebackground="#6e6e6e",
+                                         font=("Segoe UI", 10), relief="flat",
+                                         cursor="hand2", padx=10, pady=8)
+        self.btn_rev_carpeta.pack(side="left", padx=(8, 0))
+        self.var_rev = tk.StringVar(value="Aun no eliges fotos.")
+        tk.Label(fila1, textvariable=self.var_rev, bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+
+        fila2 = tk.Frame(t, bg=COLOR_FONDO)
+        fila2.pack(fill="x", padx=20, pady=4)
+        tk.Label(fila2, text="2.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_rev_excel = tk.Button(fila2, text="  Elegir Excel del personal (opcional)  ",
+                                       command=self.elegir_excel,
+                                       bg="#5a5a5a", fg=COLOR_TEXTO,
+                                       activebackground="#6e6e6e",
+                                       font=("Segoe UI", 10), relief="flat",
+                                       cursor="hand2", padx=10, pady=8)
+        self.btn_rev_excel.pack(side="left")
+        tk.Label(fila2, textvariable=self.var_excel, bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+
+        fila3 = tk.Frame(t, bg=COLOR_FONDO)
+        fila3.pack(fill="x", padx=20, pady=4)
+        tk.Label(fila3, text="3.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_revisar = tk.Button(fila3, text="  REVISAR PEDIDO  ",
+                                     command=self.revisar_pedido,
+                                     bg=COLOR_LIMA, fg="#1d1d1d",
+                                     activebackground="#eefb7a",
+                                     font=("Segoe UI", 12, "bold"),
+                                     relief="flat", cursor="hand2", padx=16, pady=8)
+        self.btn_revisar.pack(side="left")
+        self.btn_copiar = tk.Button(fila3, text="  Copiar mensaje para WhatsApp  ",
+                                    command=self.copiar_mensaje,
+                                    bg="#5a5a5a", fg=COLOR_TEXTO,
+                                    activebackground="#6e6e6e",
+                                    font=("Segoe UI", 11), relief="flat",
+                                    cursor="hand2", padx=12, pady=8, state="disabled")
+        self.btn_copiar.pack(side="left", padx=(10, 0))
+
+        marco = tk.Frame(t, bg="#2b2b2b", highlightthickness=1,
+                         highlightbackground="#4a4a4a")
+        marco.pack(fill="x", padx=20, pady=(6, 12))
+        self.txt_revision = tk.Text(marco, height=8, bg="#2b2b2b", fg="#EAEAEA",
+                                    insertbackground="#EAEAEA", wrap="word",
+                                    font=("Segoe UI", 10), relief="flat", padx=8, pady=6)
+        self.txt_revision.pack(fill="x")
+        self.txt_revision.insert("1.0", "Aqui aparecera el mensaje para el cliente. "
+                                        "Puedes editarlo antes de copiarlo.")
+
+    def _armar_tab_firmas(self):
+        t = self.tab_firmas
+        tk.Label(t, text="Convierte firmas escaneadas o fotografiadas en tinta negra "
+                         "con fondo transparente, listas para el carnet.",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(14, 0))
+        tk.Label(t, text="Sirve cualquier firma con tinta oscura sobre papel claro: "
+                         "salen recortadas al trazo, en PNG.",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20)
+        self.btn_firma = tk.Button(t, text="  Elegir firmas...  ",
+                                   command=self.elegir_firmas,
+                                   bg=COLOR_LILA, fg="#1d1d1d",
+                                   activebackground="#b3a6fa",
+                                   font=("Segoe UI", 13, "bold"),
+                                   relief="flat", cursor="hand2",
+                                   padx=14, pady=10)
+        self.btn_firma.pack(anchor="w", padx=20, pady=14)
+        tk.Label(t, text="Se guardan en la misma carpeta que las fotos (boton "
+                         "'Guardar en...' de la pestaña Procesar fotos).",
+                 bg=COLOR_FONDO, fg="#7a7a7a", font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 12))
+
+    # ---------- clientes (configuracion guardada) ----------
+    def _cargar_clientes(self):
+        try:
+            with open(CLIENTES, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _refrescar_clientes(self):
+        self.combo_cliente["values"] = [SIN_CLIENTE] + sorted(self.clientes)
+
+    def _al_elegir_cliente(self, _evento=None):
+        c = self.clientes.get(self.var_cliente.get())
+        if not c:
+            return
+        self.var_ancho.set(str(c.get("ancho", self.var_ancho.get())))
+        self.var_alto.set(str(c.get("alto", self.var_alto.get())))
+        if c.get("formato") in ("PNG", "JPG"):
+            self.var_formato.set(c["formato"])
+        if c.get("fondo") in ("blanco", "transparente"):
+            self.var_fondo.set(c["fondo"])
+        if "zoom" in c:
+            self.var_zoom.set(float(c["zoom"]))
+        if "brillo" in c:
+            self.var_brillo.set(str(c["brillo"]))
+        self.var_brillo_auto.set(bool(c.get("brillo_auto", False)))
+        self._toggle_brillo()
+        self.var_color_auto.set(bool(c.get("color_auto", False)))
+        self.var_sat_auto.set(bool(c.get("sat_auto", False)))
+        self.var_negros.set(str(c.get("negros", "0")))
+        self.estado.set(f"Configuracion de '{self.var_cliente.get()}' aplicada.")
+
+    def guardar_cliente(self):
+        actual = self.var_cliente.get()
+        nombre = simpledialog.askstring(
+            "Guardar cliente", "Nombre del cliente:",
+            initialvalue="" if actual == SIN_CLIENTE else actual, parent=self.root)
+        if not nombre or not nombre.strip():
+            return
+        nombre = nombre.strip()
+        self.clientes[nombre] = {
+            "ancho": self.var_ancho.get(), "alto": self.var_alto.get(),
+            "formato": self.var_formato.get(), "fondo": self.var_fondo.get(),
+            "zoom": round(float(self.var_zoom.get()), 2),
+            "brillo": self.var_brillo.get(),
+            "brillo_auto": self.var_brillo_auto.get(),
+            "color_auto": self.var_color_auto.get(),
+            "sat_auto": self.var_sat_auto.get(),
+            "negros": self.var_negros.get(),
+        }
+        try:
+            with open(CLIENTES, "w", encoding="utf-8") as f:
+                json.dump(self.clientes, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudo guardar: " + str(e))
+            return
+        self._refrescar_clientes()
+        self.var_cliente.set(nombre)
+        self.estado.set(f"Cliente '{nombre}' guardado con la configuracion actual.")
+
+    # ---------- revision previa del pedido ----------
+    def elegir_fotos_revision(self):
+        if self.procesando:
+            return
+        rutas = filedialog.askopenfilenames(
+            title="Elegir las fotos que mando el cliente",
+            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff"),
+                       ("Todos los archivos", "*.*")])
+        if rutas:
+            self.rev_fotos = [Path(r) for r in rutas]
+            self.var_rev.set(f"{len(self.rev_fotos)} foto(s) elegidas.")
+
+    def elegir_carpeta_revision(self):
+        if self.procesando:
+            return
+        d = filedialog.askdirectory(title="Elegir la carpeta con las fotos del cliente")
+        if d:
+            self.rev_fotos = [q for q in sorted(Path(d).iterdir())
+                              if q.suffix.lower() in EXT]
+            self.var_rev.set(f"{len(self.rev_fotos)} foto(s) en la carpeta.")
+
+    def revisar_pedido(self):
+        if self.procesando:
+            return
+        if not self.rev_fotos:
+            messagebox.showwarning("Faltan fotos",
+                                   "Primero elige las fotos que mando el cliente (paso 1).")
+            return
+        self.limpiar_galeria()
+        self.btn_copiar.config(state="disabled")
+        self.procesando = True
+        self._activar_botones(False)
+        self.barra.config(maximum=len(self.rev_fotos), value=0)
+        self.estado.set(f"Revisando {len(self.rev_fotos)} fotos...")
+        threading.Thread(target=self.worker_revision,
+                         args=(list(self.rev_fotos),), daemon=True).start()
+        self.root.after(100, self.revisar_cola)
+
+    def worker_revision(self, fotos):
+        try:
+            rev = core.revisar_fotos(fotos, self.codigos or None,
+                                     progreso=lambda i: self.cola.put(("rev_prog", i)))
+            self.cola.put(("rev_fin", rev, [str(f) for f in fotos]))
+        except Exception as e:
+            self.cola.put(("fatal", str(e)))
+
+    def copiar_mensaje(self):
+        texto = self.txt_revision.get("1.0", "end").strip()
+        if not texto:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(texto)
+        self.estado.set("Mensaje copiado. Pegalo en el chat del cliente con Ctrl+V.")
+
+    # ---------- hoja de aprobacion ----------
+    def generar_aprobacion(self):
+        if self.procesando or not self.resultados_listos:
+            return
+        archivos = [Path(p) for p in self.resultados_listos if Path(p).exists()]
+        if not archivos:
+            messagebox.showwarning("Sin lote", "Primero procesa un lote de fotos.")
+            return
+        self.procesando = True
+        self._activar_botones(False)
+        self.estado.set("Generando hoja de aprobacion...")
+        threading.Thread(target=self.worker_aprobacion,
+                         args=(archivos,), daemon=True).start()
+        self.root.after(100, self.revisar_cola)
+
+    def worker_aprobacion(self, archivos):
+        try:
+            cliente = self.var_cliente.get()
+            cliente = "" if cliente == SIN_CLIENTE else cliente
+            limpio = "".join(c for c in cliente if c.isalnum() or c in " -_").strip()
+            nombre = "aprobacion" + (("_" + limpio.replace(" ", "_")) if limpio else "")
+            destino = core.SALIDA / f"{nombre}_{time.strftime('%Y-%m-%d_%H%M')}.pdf"
+            pdf = core.hoja_aprobacion(archivos, destino, cliente)
+            self.cola.put(("pdf_listo", str(pdf)))
+        except Exception as e:
+            self.cola.put(("fatal", str(e)))
+
     def worker_firmas(self, firmas):
         # Las firmas no usan la IA: salen al toque (umbral por luminosidad).
         try:
@@ -486,8 +772,14 @@ class App:
     def _activar_botones(self, activo):
         estado = "normal" if activo else "disabled"
         for b in (self.btn_fotos, self.btn_carpeta, self.btn_firma,
-                  self.btn_excel, self.btn_destino):
+                  self.btn_excel, self.btn_destino, self.btn_rev_fotos,
+                  self.btn_rev_carpeta, self.btn_rev_excel, self.btn_revisar,
+                  self.btn_guardar_cliente):
             b.config(state=estado)
+        self.combo_cliente.config(state="readonly" if activo else "disabled")
+        # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
+        self.btn_aprobacion.config(
+            state="normal" if (activo and self.resultados_listos) else "disabled")
 
     def worker(self, fotos):
         try:
@@ -561,9 +853,48 @@ class App:
                 elif tag == "fin":
                     ok, total, resumen = msg[1], msg[2], msg[3]
                     self.estado.set(f"Listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
+                    # Registrar el lote (cliente, cantidad, fecha) para la recompra
+                    renombradas = 0
+                    if self.codigos:
+                        renombradas = ok - len(resumen["sin_match"]) \
+                            - len(resumen["ambiguo"]) - len(resumen["duplicado"])
+                    cli = self.var_cliente.get()
+                    core.registrar_lote("" if cli == SIN_CLIENTE else cli,
+                                        ok, renombradas, core.SALIDA)
                     self.mostrar_resumen(ok, total, resumen)
                     self.terminar()
                     self.abrir_salida()
+                    return
+                elif tag == "rev_prog":
+                    self.barra.config(value=msg[1])
+                elif tag == "rev_fin":
+                    rev, rutas = msg[1], msg[2]
+                    problemas = {f["nombre"] for f in rev["con_problema"]}
+                    for r in rutas:
+                        self.agregar_miniatura(r, Path(r).name in problemas)
+                    texto = core.mensaje_para_cliente(rev)
+                    self.txt_revision.delete("1.0", "end")
+                    self.txt_revision.insert("1.0", texto)
+                    self.btn_copiar.config(state="normal")
+                    pendientes = len(rev["con_problema"]) + len(rev["sin_foto"])
+                    if pendientes == 0:
+                        self.estado.set(f"Revision lista: TODO CONFORME "
+                                        f"({rev['total']} fotos). Puede pasar a produccion.")
+                    else:
+                        self.estado.set(
+                            f"Revision lista: {rev['ok']} de {rev['total']} conformes | "
+                            f"{len(rev['con_problema'])} foto(s) con problema | "
+                            f"{len(rev['sin_foto'])} persona(s) sin foto. "
+                            "Mensaje listo para copiar.")
+                    self.terminar()
+                    return
+                elif tag == "pdf_listo":
+                    self.estado.set("Hoja de aprobacion lista: " + msg[1])
+                    self.terminar()
+                    try:
+                        os.startfile(msg[1])
+                    except Exception:
+                        pass
                     return
                 elif tag == "fin_firmas":
                     ok, total, fallas = msg[1], msg[2], msg[3]
