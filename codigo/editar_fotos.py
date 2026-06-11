@@ -364,15 +364,17 @@ def _limpiar_mascara(alpha, fuerza=1.0):
 
 
 def _alfa_fino(alpha):
-    # El modelo fino ya separa el pelo mechon a mechon; aqui solo se modela la
-    # transicion (calibrado con fotos reales de clientes, 2026-06-11):
-    #  1) Curva suave 40-210: la "neblina" de alfa bajo (velo que el modelo
-    #     regala alrededor del pelo) se va; el trazo firme queda intacto.
-    #  2) Histeresis: una mancha semitransparente que NO toca zona solida es
-    #     neblina del modelo (no es pelo) y se elimina entera.
+    # Borde FIRME con antialias fino (calibrado con fotos reales, 2026-06-11).
+    # Leccion aprendida: cualquier zona semitransparente ancha se ve mal sobre
+    # ALGUN fondo (si trae el color del fondo original se nota sobre oscuro; si
+    # se recolorea con el color del pelo se nota como humo sobre blanco). Por
+    # eso la transicion se concentra en una ventana angosta (110-160): toda la
+    # neblina muere, el borde queda anti-aliased y los mechones se conservan
+    # porque la silueta solida de isnet ya tiene forma de pelo.
     a = np.asarray(alpha).astype(np.float32)
-    x = np.clip((a - 40.0) / (210.0 - 40.0), 0.0, 1.0)
+    x = np.clip((a - 110.0) / (160.0 - 110.0), 0.0, 1.0)
     s = (x * x * (3.0 - 2.0 * x)) * 255.0
+    # Histeresis: una mancha que NO toca zona solida es ruido y se va entera.
     cand = (s > 12).astype(np.uint8)
     nucleo = (s > 200).astype(np.uint8)
     _n, lab = cv2.connectedComponents(cand, connectivity=8)
