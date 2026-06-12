@@ -1,9 +1,13 @@
 import json
+import logging
+import logging.handlers
 import os
+import platform
 import queue
 import shutil
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import tkinter as tk
@@ -25,6 +29,44 @@ COLOR_ALERTA = "#E74C3C"  # rojo para fotos a revisar
 ULTIMO = core.BASE / "ultimo.json"      # recuerda el ultimo tamano usado
 CLIENTES = core.BASE / "clientes.json"  # configuracion guardada por cliente
 SIN_CLIENTE = "(sin cliente)"
+REGISTRO = core.BASE / "registro.log"   # caja negra: bitacora para diagnosticar
+
+
+def _armar_caja_negra():
+    # Bitacora de lo que hace el programa. Rota sola (max ~600 KB en total),
+    # y si no se puede escribir (permisos), la app funciona igual sin bitacora.
+    log = logging.getLogger("editor")
+    log.setLevel(logging.INFO)
+    if not log.handlers:
+        try:
+            h = logging.handlers.RotatingFileHandler(
+                REGISTRO, maxBytes=300_000, backupCount=1, encoding="utf-8")
+            h.setFormatter(logging.Formatter(
+                "%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+            log.addHandler(h)
+        except Exception:
+            log.addHandler(logging.NullHandler())
+    return log
+
+
+LOG = _armar_caja_negra()
+
+
+def _diagnostico(error_txt=""):
+    # Reporte tecnico listo para pegar en el chat: version, equipo, el error
+    # y los ultimos eventos de la bitacora. Es lo que se copia al portapapeles
+    # cuando algo falla, para diagnosticar a distancia sin adivinar.
+    lineas = ["=== DIAGNOSTICO - EDITOR DE FOTOS DISECOD ===",
+              f"version: {_version()} | equipo: {platform.node()} | "
+              f"fecha: {time.strftime('%Y-%m-%d %H:%M')}"]
+    if error_txt:
+        lineas += ["", "--- ERROR ---", str(error_txt).strip()]
+    try:
+        cola = REGISTRO.read_text(encoding="utf-8", errors="ignore").splitlines()
+        lineas += ["", "--- ULTIMOS EVENTOS ---"] + cola[-40:]
+    except Exception:
+        pass
+    return "\n".join(lineas)
 
 
 def _version():
@@ -58,6 +100,9 @@ class App:
 
         v = _version()
         root.title("Editor de Fotos Fotochecks - DISECOD" + (f"   v{v}" if v else ""))
+        LOG.info(f"--- programa abierto: v{v} en {platform.node()} ---")
+        # Cualquier error de la interfaz pasa por la caja negra (no se pierde)
+        root.report_callback_exception = self._error_interfaz
         root.geometry("820x780")
         root.configure(bg=COLOR_FONDO)
         root.minsize(680, 660)
@@ -657,8 +702,8 @@ class App:
             rev = core.revisar_fotos(fotos, self.codigos or None,
                                      progreso=lambda i: self.cola.put(("rev_prog", i)))
             self.cola.put(("rev_fin", rev, [str(f) for f in fotos]))
-        except Exception as e:
-            self.cola.put(("fatal", str(e)))
+        except Exception:
+            self.cola.put(("fatal", traceback.format_exc()))
 
     def copiar_mensaje(self):
         texto = self.txt_revision.get("1.0", "end").strip()
@@ -694,8 +739,8 @@ class App:
                        if self.codigos else None)
             pdf = core.hoja_aprobacion(archivos, destino, cliente, nombres)
             self.cola.put(("pdf_listo", str(pdf)))
-        except Exception as e:
-            self.cola.put(("fatal", str(e)))
+        except Exception:
+            self.cola.put(("fatal", traceback.format_exc()))
 
     def worker_firmas(self, firmas):
         # Las firmas no usan la IA: salen al toque (umbral por luminosidad).
@@ -710,10 +755,11 @@ class App:
                     self.cola.put(("una", i, str(destino), False))
                 except Exception as e:
                     fallas.append(f"{ruta.name}: {e}")
+                    LOG.info(f"firma fallo {ruta.name}:\n" + traceback.format_exc())
                     self.cola.put(("error_una", i, str(e)))
             self.cola.put(("fin_firmas", ok, len(firmas), fallas))
-        except Exception as e:
-            self.cola.put(("fatal", str(e)))
+        except Exception:
+            self.cola.put(("fatal", traceback.format_exc()))
 
     # ---------- procesar ----------
     def iniciar(self, fotos):
@@ -768,6 +814,9 @@ class App:
                             "modelo (UNA sola vez, ~180 MB). Puede tardar...")
         else:
             self.estado.set("Preparando modelo de IA...")
+        LOG.info(f"lote: {len(fotos)} fotos | fondo {self.var_fondo.get()} | "
+                 f"formato {self.var_formato.get()} | cliente {self.var_cliente.get()} | "
+                 f"excel {'si' if self.codigos else 'no'} | destino {core.SALIDA}")
         threading.Thread(target=self.worker, args=(fotos,), daemon=True).start()
         self.root.after(100, self.revisar_cola)
 
@@ -795,6 +844,8 @@ class App:
                     lambda pct: self.cola.put(
                         ("estado", "Descargando mejora del recorte de pelo "
                                    f"(una sola vez)... {pct}%")))
+                LOG.info("modelo de recorte: " + ("fino (isnet)" if self.fino
+                         else "CLASICO - no se pudo descargar el fino"))
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             self.cola.put(("inicio", len(fotos)))
             ok = 0
@@ -832,10 +883,11 @@ class App:
                     ok += 1
                     self.cola.put(("una", i, str(destino), revisar))
                 except Exception as e:
+                    LOG.info(f"foto fallo {ruta.name}:\n" + traceback.format_exc())
                     self.cola.put(("error_una", i, str(e)))
             self.cola.put(("fin", ok, len(fotos), resumen))
-        except Exception as e:
-            self.cola.put(("fatal", str(e)))
+        except Exception:
+            self.cola.put(("fatal", traceback.format_exc()))
 
     def revisar_cola(self):
         try:
@@ -863,6 +915,7 @@ class App:
                     cli = self.var_cliente.get()
                     core.registrar_lote("" if cli == SIN_CLIENTE else cli,
                                         ok, renombradas, core.SALIDA)
+                    LOG.info(f"lote listo: {ok}/{total} ok | renombradas {renombradas}")
                     self.mostrar_resumen(ok, total, resumen)
                     self.terminar()
                     self.abrir_salida()
@@ -878,6 +931,9 @@ class App:
                     self.txt_revision.delete("1.0", "end")
                     self.txt_revision.insert("1.0", texto)
                     self.btn_copiar.config(state="normal")
+                    LOG.info(f"revision: {rev['ok']}/{rev['total']} conformes | "
+                             f"{len(rev['con_problema'])} con problema | "
+                             f"{len(rev['sin_foto'])} sin foto")
                     pendientes = len(rev["con_problema"]) + len(rev["sin_foto"])
                     if pendientes == 0:
                         self.estado.set(f"Revision lista: TODO CONFORME "
@@ -891,6 +947,7 @@ class App:
                     self.terminar()
                     return
                 elif tag == "pdf_listo":
+                    LOG.info("hoja de aprobacion generada: " + msg[1])
                     self.estado.set("Hoja de aprobacion lista: " + msg[1])
                     self.terminar()
                     try:
@@ -900,6 +957,7 @@ class App:
                     return
                 elif tag == "fin_firmas":
                     ok, total, fallas = msg[1], msg[2], msg[3]
+                    LOG.info(f"firmas listas: {ok}/{total}")
                     self.estado.set(f"Firmas listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
                     texto = (f"Se procesaron {ok} de {total} firma(s).\n"
                              "Salen en PNG con tinta negra y fondo transparente, "
@@ -914,7 +972,7 @@ class App:
                     return
                 elif tag == "fatal":
                     self.estado.set("Hubo un error al procesar.")
-                    messagebox.showerror("Error", str(msg[1]))
+                    self._avisar_error(msg[1])
                     self.terminar()
                     return
         except queue.Empty:
@@ -924,6 +982,29 @@ class App:
     def terminar(self):
         self.procesando = False
         self._activar_botones(True)
+
+    # ---------- caja negra ----------
+    def _error_interfaz(self, exc, val, tb):
+        self._avisar_error("".join(traceback.format_exception(exc, val, tb)))
+
+    def _avisar_error(self, texto_tecnico):
+        # Registra el error, copia el diagnostico al portapapeles y avisa en
+        # lenguaje simple. La persona solo tiene que PEGAR el reporte en el chat.
+        LOG.info("ERROR:\n" + str(texto_tecnico).strip())
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(_diagnostico(texto_tecnico))
+        except Exception:
+            pass
+        try:
+            messagebox.showerror(
+                "Ups, algo fallo",
+                "El programa tuvo un problema con esta operacion.\n\n"
+                "El reporte tecnico YA quedo copiado: abre el chat con Diego y "
+                "pegalo con Ctrl+V para que lo revise.\n\n"
+                "Puedes seguir usando el programa con normalidad.")
+        except Exception:
+            pass
 
     # ---------- galeria ----------
     def limpiar_galeria(self):
