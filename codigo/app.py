@@ -1,6 +1,5 @@
 import json
 import logging
-import logging.handlers
 import os
 import platform
 import queue
@@ -35,12 +34,16 @@ REGISTRO = core.BASE / "registro.log"   # caja negra: bitacora para diagnosticar
 def _armar_caja_negra():
     # Bitacora de lo que hace el programa. Rota sola (max ~600 KB en total),
     # y si no se puede escribir (permisos), la app funciona igual sin bitacora.
+    # OJO: rotacion MANUAL con logging.FileHandler — logging.handlers NO existe
+    # dentro del .exe congelado (leccion v21->v22: el exe solo trae las piezas
+    # de Python empacadas al construirlo; un import nuevo puede no estar).
     log = logging.getLogger("editor")
     log.setLevel(logging.INFO)
     if not log.handlers:
         try:
-            h = logging.handlers.RotatingFileHandler(
-                REGISTRO, maxBytes=300_000, backupCount=1, encoding="utf-8")
+            if REGISTRO.exists() and REGISTRO.stat().st_size > 300_000:
+                REGISTRO.replace(REGISTRO.with_suffix(".log.1"))  # archivar
+            h = logging.FileHandler(REGISTRO, encoding="utf-8")
             h.setFormatter(logging.Formatter(
                 "%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
             log.addHandler(h)
