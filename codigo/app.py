@@ -1000,8 +1000,8 @@ class App:
             messagebox.showerror(
                 "Ups, algo fallo",
                 "El programa tuvo un problema con esta operacion.\n\n"
-                "El reporte tecnico YA quedo copiado: abre el chat con Diego y "
-                "pegalo con Ctrl+V para que lo revise.\n\n"
+                "El reporte tecnico YA quedo copiado: abre el chat de soporte y "
+                "pegalo con Ctrl+V para que lo revisen.\n\n"
                 "Puedes seguir usando el programa con normalidad.")
         except Exception:
             pass

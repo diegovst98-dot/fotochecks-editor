@@ -1,8 +1,15 @@
 {
-  "version": 18,
+  "version": 19,
   "archivos": [
     "app.py",
     "editar_fotos.py",
+    "encuadre.py",
+    "excel_codigos.py",
+    "firmas.py",
+    "motor_ia.py",
+    "pedidos.py",
+    "retoque.py",
+    "rutas.py",
     "version.txt"
   ]
 }
