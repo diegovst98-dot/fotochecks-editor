@@ -87,6 +87,8 @@ class App:
             self.preset = None
         self.session = None
         self.fino = False         # True si el modelo fino de recorte esta activo
+        self.session_max = None   # modelo de maxima calidad (solo si se usa)
+        self.modo_maximo = False  # el lote actual va en calidad maxima
         self.thumbs = []          # referencias a las imagenes (evita que se borren)
         self.cola = queue.Queue()
         self.procesando = False
@@ -176,6 +178,16 @@ class App:
                                      relief="flat", cursor="hand2",
                                      padx=12, pady=10)
         self.btn_carpeta.pack(side="left", padx=(10, 0))
+        # Para LA foto puntual con pelo muy dificil: modelo de maxima calidad
+        # (~2 min por foto, por eso no es el modo normal).
+        self.btn_dificil = tk.Button(botones, text="  Foto dificil  ",
+                                     command=self.elegir_foto_dificil,
+                                     bg="#5a5a5a", fg=COLOR_TEXTO,
+                                     activebackground="#6e6e6e",
+                                     font=("Segoe UI", 11),
+                                     relief="flat", cursor="hand2",
+                                     padx=12, pady=10)
+        self.btn_dificil.pack(side="left", padx=(10, 0))
         self.btn_abrir = tk.Button(botones, text="  Abrir resultados  ",
                                    command=self.abrir_salida,
                                    bg="#5a5a5a", fg=COLOR_TEXTO,
@@ -382,6 +394,27 @@ class App:
         except (ValueError, TypeError):
             return 0
         return max(0, min(80, v))
+
+    def elegir_foto_dificil(self):
+        # Reprocesa foto(s) puntuales con el modelo de MAXIMA calidad (BiRefNet).
+        if self.procesando:
+            return
+        rutas_f = filedialog.askopenfilenames(
+            title="Elegir la(s) foto(s) con pelo dificil",
+            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff"),
+                       ("Todos los archivos", "*.*")])
+        if not rutas_f:
+            return
+        fotos = [Path(r) for r in rutas_f]
+        aviso = (f"Se procesara(n) {len(fotos)} foto(s) con el modelo de MAXIMA "
+                 "calidad, pensado para pelo muy dificil.\n\n"
+                 "Tarda bastante mas que el modo normal (hasta un minuto por "
+                 "foto). Es normal, no esta colgado.")
+        if not core.modelo_maximo_descargado():
+            aviso += "\n\nLa primera vez descargara el modelo (~900 MB, una sola vez)."
+        if not messagebox.askokcancel("Calidad maxima", aviso):
+            return
+        self.iniciar(fotos, maxima=True)
 
     def elegir_destino(self):
         if self.procesando:
@@ -763,7 +796,8 @@ class App:
             self.cola.put(("fatal", traceback.format_exc()))
 
     # ---------- procesar ----------
-    def iniciar(self, fotos):
+    def iniciar(self, fotos, maxima=False):
+        self.modo_maximo = maxima
         fotos = [f for f in fotos if f.suffix.lower() in EXT and f.exists()]
         if not fotos:
             messagebox.showwarning("Sin fotos",
@@ -814,12 +848,19 @@ class App:
         self.procesando = True
         self._activar_botones(False)
         self.barra.config(maximum=len(fotos), value=0)
-        if self.session is None and not core.modelo_fino_descargado():
+        if maxima:
+            if self.session_max is None and not core.modelo_maximo_descargado():
+                self.estado.set("Descargando el modelo de MAXIMA calidad (una "
+                                "sola vez, ~900 MB). Puede tardar varios minutos...")
+            else:
+                self.estado.set("Preparando el modelo de maxima calidad...")
+        elif self.session is None and not core.modelo_fino_descargado():
             self.estado.set("Mejorando el recorte de pelo: descargando el nuevo "
                             "modelo (UNA sola vez, ~180 MB). Puede tardar...")
         else:
             self.estado.set("Preparando modelo de IA...")
-        LOG.info(f"lote: {len(fotos)} fotos | fondo {self.var_fondo.get()} | "
+        LOG.info(("CALIDAD MAXIMA | " if maxima else "") +
+                 f"lote: {len(fotos)} fotos | fondo {self.var_fondo.get()} | "
                  f"formato {self.var_formato.get()} | cliente {self.var_cliente.get()} | "
                  f"excel {'si' if self.codigos else 'no'} | destino {core.SALIDA}")
         threading.Thread(target=self.worker, args=(fotos,), daemon=True).start()
@@ -828,9 +869,9 @@ class App:
     def _activar_botones(self, activo):
         estado = "normal" if activo else "disabled"
         for b in (self.btn_fotos, self.btn_carpeta, self.btn_firma,
-                  self.btn_excel, self.btn_destino, self.btn_rev_fotos,
-                  self.btn_rev_carpeta, self.btn_rev_excel, self.btn_revisar,
-                  self.btn_guardar_cliente):
+                  self.btn_dificil, self.btn_excel, self.btn_destino,
+                  self.btn_rev_fotos, self.btn_rev_carpeta, self.btn_rev_excel,
+                  self.btn_revisar, self.btn_guardar_cliente):
             b.config(state=estado)
         self.combo_cliente.config(state="readonly" if activo else "disabled")
         # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
@@ -841,16 +882,28 @@ class App:
         try:
             if self.preset is None:
                 self.preset = core.cargar_preset()
-            if self.session is None:
-                # Modelo fino (mejor calado de pelo); si no se puede descargar,
-                # cae solo al modelo clasico de siempre.
-                self.session, self.fino = core.sesion_recorte(
-                    self.preset,
-                    lambda pct: self.cola.put(
-                        ("estado", "Descargando mejora del recorte de pelo "
-                                   f"(una sola vez)... {pct}%")))
-                LOG.info("modelo de recorte: " + ("fino (isnet)" if self.fino
-                         else "CLASICO - no se pudo descargar el fino"))
+            if self.modo_maximo:
+                # Modelo de MAXIMA calidad (BiRefNet), solo para fotos dificiles.
+                # Sin fallback: si no se puede descargar, el error se avisa.
+                if self.session_max is None:
+                    self.session_max = core.sesion_maxima(
+                        lambda pct: self.cola.put(
+                            ("estado", "Descargando modelo de maxima calidad "
+                                       f"(una sola vez)... {pct}%")))
+                    LOG.info("modelo maximo (birefnet) listo")
+                session, fino = self.session_max, True
+            else:
+                if self.session is None:
+                    # Modelo fino (mejor calado de pelo); si no se puede
+                    # descargar, cae solo al modelo clasico de siempre.
+                    self.session, self.fino = core.sesion_recorte(
+                        self.preset,
+                        lambda pct: self.cola.put(
+                            ("estado", "Descargando mejora del recorte de pelo "
+                                       f"(una sola vez)... {pct}%")))
+                    LOG.info("modelo de recorte: " + ("fino (isnet)" if self.fino
+                             else "CLASICO - no se pudo descargar el fino"))
+                session, fino = self.session, self.fino
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             self.cola.put(("inicio", len(fotos)))
             ok = 0
@@ -877,8 +930,7 @@ class App:
                             resumen["sin_match"].append(ruta.name)
                             revisar = True
                     destino, hubo_cara, pixelado = core.procesar_una(
-                        ruta, self.preset, self.session, nombre_salida,
-                        fino=self.fino)
+                        ruta, self.preset, session, nombre_salida, fino=fino)
                     if not hubo_cara:
                         resumen["sin_cara"].append(ruta.name)
                         revisar = True
@@ -900,7 +952,11 @@ class App:
                 msg = self.cola.get_nowait()
                 tag = msg[0]
                 if tag == "inicio":
-                    self.estado.set(f"Procesando {msg[1]} fotos...")
+                    if self.modo_maximo:
+                        self.estado.set(f"Procesando {msg[1]} foto(s) en CALIDAD "
+                                        "MAXIMA (hasta ~1 min por foto)...")
+                    else:
+                        self.estado.set(f"Procesando {msg[1]} fotos...")
                 elif tag == "estado":
                     self.estado.set(msg[1])
                 elif tag == "una":

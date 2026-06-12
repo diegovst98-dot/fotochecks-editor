@@ -25,8 +25,9 @@ import firmas as _firmas
 import pedidos as _pedidos
 from rutas import (BASE, ENTRADA, CONFIG, EXTENSIONES, base_dir,
                    cargar_preset, pausar)
-from motor_ia import (MODELO_FINO, new_session, modelo_fino_descargado,
-                      descargar_modelo_fino, sesion_recorte)
+from motor_ia import (MODELO_FINO, MODELO_MAXIMO, new_session,
+                      modelo_fino_descargado, modelo_maximo_descargado,
+                      descargar_modelo_fino, sesion_recorte, sesion_maxima)
 from excel_codigos import (_normalizar, _tokens, _es_codigo,
                            cargar_codigos, emparejar)
 from encuadre import (ruta_cascade, detectar_cara, recortar_region,
