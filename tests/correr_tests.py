@@ -245,6 +245,7 @@ def main():
         root.update()
         tabs = [a.nb.tab(i, "text") for i in a.nb.tabs()]
         check("ventana arma con 3 pestañas", len(tabs) == 3, str(tabs))
+        check("boton Foto dificil existe", hasattr(a, "btn_dificil"))
         a._activar_botones(False)
         a._activar_botones(True)
         check("bloqueo de botones funciona", True)
