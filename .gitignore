@@ -1,4 +1,4 @@
-# Pesado / generado: NO subir a GitHub
+﻿# Pesado / generado: NO subir a GitHub
 modelo/
 dist/
 build/
@@ -18,5 +18,5 @@ tests/doradas/
 tests/tmp/
 lotes.csv
 clientes.json
-registro.log
+registro.log*
 pedidos/

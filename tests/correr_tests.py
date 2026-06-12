@@ -76,6 +76,60 @@ def main():
     if fallas:  # sin compilacion no tiene sentido seguir
         return
 
+    # ---------- 1b. imports compatibles con el .exe ----------
+    # El exe congelado solo trae las piezas de Python empacadas al CONSTRUIRLO;
+    # un import nuevo en codigo/ que no este en el paquete ROMPE el programa en
+    # las PCs del equipo aunque aqui funcione (leccion v21: logging.handlers).
+    # Limite conocido: 'from X import Y' solo audita X, no el submodulo Y.
+    print("\n[1b] Imports compatibles con el exe")
+    import ast
+    import zipfile
+    imports = set()
+    propios = {p.stem for p in (BASE / "codigo").glob("*.py")}
+    for p in (BASE / "codigo").glob("*.py"):
+        arbol = ast.parse(p.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Import):
+                imports.update(a.name for a in nodo.names)
+            elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+                imports.add(nodo.module)
+    imports = {i for i in imports if i.split(".")[0] not in propios}
+    internal = BASE / "dist" / "FotochecksEditor" / "_internal"
+    exe = BASE / "dist" / "FotochecksEditor" / "FotochecksEditor.exe"
+    if not exe.exists():
+        check("exe disponible para auditar imports", False,
+              "no hay dist/ en esta PC: no se puede garantizar compatibilidad")
+    else:
+        disponibles = set(sys.builtin_module_names)
+        blz = internal / "base_library.zip"
+        if blz.exists():
+            for n in zipfile.ZipFile(blz).namelist():
+                m = n.replace("/", ".").removesuffix(".pyc").removesuffix(".py")
+                if m.endswith(".__init__"):
+                    m = m[:-len(".__init__")]
+                disponibles.add(m)
+        try:
+            from PyInstaller.archive.readers import CArchiveReader
+            arch = CArchiveReader(str(exe))
+            for nombre in list(arch.toc):
+                if str(nombre).endswith(".pyz"):
+                    disponibles.update(
+                        arch.open_embedded_archive(nombre).toc.keys())
+        except Exception as e:
+            print(f"  (aviso: no se pudo leer el PYZ del exe: {e})")
+        carpetas = set()
+        for d in internal.iterdir():
+            if d.is_dir():
+                carpetas.add(d.name)
+            elif d.suffix == ".pyd":
+                disponibles.add(d.name.split(".")[0])
+        for imp in sorted(imports):
+            raiz = imp.split(".")[0]
+            ok = (imp in disponibles or raiz in carpetas
+                  or ("." not in imp and raiz in disponibles))
+            check(f"el exe trae '{imp}'", ok,
+                  "NO esta en el exe: quitarlo del codigo o reconstruir el exe")
+
     import editar_fotos as core
     from PIL import Image, ImageDraw, ImageFilter
     import numpy as np
