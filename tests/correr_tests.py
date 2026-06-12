@@ -149,6 +149,13 @@ def main():
         csv = (TMP / "lotes.csv").read_text(encoding="utf-8-sig")
         check("lotes.csv: cabecera + 2 filas", csv.count("\n") >= 3, csv[:120])
         check("lotes.csv: registra el cliente", "Cliente Test;7;5" in csv, csv)
+        c1 = core.carpeta_pedido("ACME S.A.C.")
+        c2 = core.carpeta_pedido("ACME S.A.C.")
+        check("carpeta de pedido: fecha+cliente y reutilizable",
+              c1.exists() and c1 == c2 and c1.parent.name == "pedidos"
+              and c1.name.endswith("ACME SAC"), str(c1))
+        c3 = core.carpeta_pedido("")
+        check("carpeta de pedido sin cliente", c3.name.endswith("pedido"), str(c3))
     finally:
         core.BASE = base_real
     if len(entrada) >= 3:
