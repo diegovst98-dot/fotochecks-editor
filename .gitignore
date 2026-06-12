@@ -12,3 +12,9 @@ salida/
 # Archivos de trabajo locales
 .playwright-mcp/
 comparacion/
+
+# Privado: fotos de clientes y data comercial (NUNCA al repo publico)
+tests/doradas/
+tests/tmp/
+lotes.csv
+clientes.json

@@ -34,6 +34,20 @@ def _entero(texto):
 def main():
     if not VERSION_FILE.exists():
         print("No se encontro codigo/version.txt"); return
+
+    # CANDADO DE CALIDAD: si los tests fallan, NO se publica nada. Evita mandar
+    # a las PCs del equipo un cambio que rompe algo que ya funcionaba.
+    tests = BASE / "tests" / "correr_tests.py"
+    if tests.exists():
+        print("Corriendo tests antes de publicar (~1 min)...")
+        r = subprocess.run([sys.executable, str(tests)], cwd=BASE)
+        if r.returncode != 0:
+            print("\n[X] LOS TESTS FALLARON - PUBLICACION CANCELADA. Nada se subio.")
+            print("    Si el cambio es INTENCIONAL y ya revisaste las salidas a ojo:")
+            print("    python tests\\correr_tests.py --aprobar   (y publica de nuevo)")
+            return
+        print("Tests OK.\n")
+
     actual = _entero(VERSION_FILE.read_text(encoding="utf-8"))
     nueva = actual + 1
 
