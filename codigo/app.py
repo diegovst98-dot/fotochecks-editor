@@ -690,7 +690,9 @@ class App:
             limpio = "".join(c for c in cliente if c.isalnum() or c in " -_").strip()
             nombre = "aprobacion" + (("_" + limpio.replace(" ", "_")) if limpio else "")
             destino = core.SALIDA / f"{nombre}_{time.strftime('%Y-%m-%d_%H%M')}.pdf"
-            pdf = core.hoja_aprobacion(archivos, destino, cliente)
+            nombres = ({r["codigo"]: r["nombre"] for r in self.codigos}
+                       if self.codigos else None)
+            pdf = core.hoja_aprobacion(archivos, destino, cliente, nombres)
             self.cola.put(("pdf_listo", str(pdf)))
         except Exception as e:
             self.cola.put(("fatal", str(e)))

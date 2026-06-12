@@ -387,32 +387,88 @@ def _alfa_fino(alpha):
                 if stats[i, cv2.CC_STAT_AREA] >= max(200, area_max * 0.005)]
         abierta = np.isin(lab, keep).astype(np.uint8)
     suave = cv2.GaussianBlur(abierta.astype(np.float32), (0, 0), max(1.2, r * 0.45))
-    s = np.clip((suave - 0.40) / 0.20, 0.0, 1.0) * 255.0
+    # rampa corrida hacia adentro (~1px): recorta los pixeles mas externos del
+    # contorno, que son los mas contaminados con el color del fondo original
+    s = np.clip((suave - 0.45) / 0.20, 0.0, 1.0) * 255.0
     return Image.fromarray(s.astype(np.uint8))
 
 
 def _descontaminar(img, alpha):
-    # El borde del recorte trae el color de la TRANSICION de la foto original
-    # (pelo mezclado con el fondo claro): sobre el diseño de color del
-    # fotocheck se ve como un filo palido pegado a la silueta. Arreglo de
-    # retocador: el anillo exterior (~2 px pegados al fondo) y todo pixel
-    # semitransparente toman el color del interior solido mas cercano. La
-    # FORMA (el alfa) no se toca, solo el color.
+    # Limpia el COLOR del recorte sin tocar la forma. Dos males distintos
+    # (medidos con fotos reales, 2026-06-11):
+    #  1) BORDE: la franja del contorno trae la transicion pelo+fondo claro de
+    #     la foto original (sobre cualquier fondo se ve como un filo palido).
+    #     Se recolorea TODA la banda de borde (~4px + antialias) con el color
+    #     del interior profundo mas cercano — nunca de pixeles que parezcan
+    #     fondo (antes se tomaba de 2px adentro, donde la pintura sigue sucia).
+    #  2) BOLSONES: manchas del fondo original atrapadas ENTRE rizos/mechones,
+    #     opacas y encerradas (la apertura no las toca). Se recolorean SOLO si
+    #     son manchas chicas: una prenda clara parecida al fondo es una region
+    #     enorme y queda intacta (leccion de la v14: nunca borrarlas por alfa,
+    #     que se come los brillos del pelo; recolorear es reversible a la vista).
     img_np = np.asarray(img.convert("RGB"))
     a8 = np.asarray(alpha)
-    fuera = (a8 < 30).astype(np.uint8)
+    opaco = (a8 >= 200)
+    fuera = (a8 < 30)
+    if not opaco.any():
+        return img.convert("RGB")
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cerca = cv2.dilate(fuera, k3, iterations=2).astype(bool)
-    reemplazar = (a8 > 0) & (cerca | (a8 < 200))
-    interior = ((a8 >= 200) & ~cerca).astype(np.uint8)
+    interior = cv2.erode(opaco.astype(np.uint8), k3, iterations=4).astype(bool)
     if not interior.any():
-        interior = (a8 >= 128).astype(np.uint8)
-        if not interior.any():
-            return img.convert("RGB")
-    # distancia con etiquetas: para cada pixel, CUAL es su interior mas cercano
+        interior = opaco
+
+    parecido = None
+    bolson = False
+    if fuera.sum() >= 500:
+        fondo_color = np.median(img_np[fuera].reshape(-1, 3), axis=0)
+        dif = np.abs(img_np.astype(np.float32) - fondo_color).max(axis=2)
+        parecido = dif < 35
+        # Bolsones = huecos del peinado con el fondo original adentro. TRIPLE
+        # condicion para no tocar jamas ropa clara (una casaca beige con
+        # motitas se fragmenta en manchas chicas y burlaria un filtro simple):
+        # la mancha debe ser (1) CHICA, (2) estar CERCA del contorno exterior
+        # y (3) estar RODEADA de pelo oscuro.
+        cand = ((a8 > 0) & parecido).astype(np.uint8)
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+        if n > 1:
+            area_persona = max(int(opaco.sum()), 1)
+            oscuro = img_np.astype(np.float32).mean(axis=2) < 110
+            dist_fuera = cv2.distanceTransform((~fuera).astype(np.uint8),
+                                               cv2.DIST_L2, 3)
+            sel = np.zeros(a8.shape, dtype=bool)
+            alto, ancho = a8.shape
+            for i in range(1, n):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if not (6 <= area < max(80, area_persona * 0.02)):
+                    continue
+                x0 = stats[i, cv2.CC_STAT_LEFT]
+                y0 = stats[i, cv2.CC_STAT_TOP]
+                ww = stats[i, cv2.CC_STAT_WIDTH]
+                hh = stats[i, cv2.CC_STAT_HEIGHT]
+                ys0, ys1 = max(0, y0 - 6), min(alto, y0 + hh + 6)
+                xs0, xs1 = max(0, x0 - 6), min(ancho, x0 + ww + 6)
+                comp = lab[ys0:ys1, xs0:xs1] == i
+                if dist_fuera[ys0:ys1, xs0:xs1][comp].min() > 25:
+                    continue  # lejos del borde: no es hueco de peinado
+                anillo = cv2.dilate(comp.astype(np.uint8), k3,
+                                    iterations=3).astype(bool) & ~comp
+                if anillo.any() and oscuro[ys0:ys1, xs0:xs1][anillo].mean() >= 0.6:
+                    sel[ys0:ys1, xs0:xs1] |= comp
+            if sel.any():
+                bolson = sel
+
+    reemplazar = ((a8 > 0) & ~interior)
+    if bolson is not False:
+        reemplazar = reemplazar | bolson
+
+    fuente = interior & ~parecido if parecido is not None else interior
+    if not fuente.any():
+        fuente = interior
+    fuente = fuente.astype(np.uint8)
+    # distancia con etiquetas: para cada pixel, CUAL es su fuente mas cercana
     _d, labels = cv2.distanceTransformWithLabels(
-        1 - interior, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
-    coords = np.argwhere(interior == 1)  # mismo orden (fila a fila) que labels
+        1 - fuente, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    coords = np.argwhere(fuente == 1)  # mismo orden (fila a fila) que labels
     mapped = np.clip(labels - 1, 0, len(coords) - 1)
     ys, xs = coords[:, 0], coords[:, 1]
     ext = img_np[ys[mapped], xs[mapped]]
@@ -777,9 +833,11 @@ def mensaje_para_cliente(rev):
 
 # ---------- hoja de aprobacion (PDF) ----------
 
-def hoja_aprobacion(archivos, destino_pdf, cliente=""):
-    # Grilla de miniaturas (foto final + nombre/codigo) en PDF, para que el
-    # cliente apruebe ANTES de imprimir. Evita reimpresiones por errores.
+def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):
+    # Grilla de miniaturas (foto final + codigo Y NOMBRE de la persona) en PDF.
+    # Su valor real: que el CLIENTE confirme que cada foto corresponde a la
+    # persona correcta ANTES de imprimir (el error de identidad es el caro).
+    # 'nombres' = dict codigo -> nombre completo (del Excel), opcional.
     from PIL import ImageDraw, ImageFont
     AN, AL = 1240, 1754  # A4 vertical a 150 dpi
     MARGEN, COLS = 60, 4
@@ -822,8 +880,11 @@ def hoja_aprobacion(archivos, destino_pdf, cliente=""):
                             outline=(210, 210, 210), width=1)
             except Exception:
                 d.text((x + 8, y + 8), "(error)", fill=(200, 60, 60), font=F_PIE)
-            nombre = Path(ruta).stem
-            d.text((x + 4, y + celda_h - 24), nombre[:26],
+            stem = Path(ruta).stem
+            etiqueta = stem
+            if nombres and stem in nombres:
+                etiqueta = f"{stem} - {nombres[stem]}"
+            d.text((x + 4, y + celda_h - 24), etiqueta[:30],
                    fill=(40, 40, 40), font=F_PIE)
         paginas.append(pag)
     destino_pdf = Path(destino_pdf)
