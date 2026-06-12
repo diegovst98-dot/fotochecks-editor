@@ -275,8 +275,7 @@ class App:
         tk.Label(col, text="(0-80, 0 = no tocar)", bg=COLOR_FONDO, fg="#7a7a7a",
                  font=("Segoe UI", 8)).pack(side="left", padx=(3, 0))
 
-        # --- Carpeta donde guardar (por defecto 'salida') ---
-        self.salida_default = core.SALIDA
+        # --- Carpeta donde guardar (por defecto, la carpeta del pedido) ---
         self.carpeta_salida = None
         dest = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
         dest.pack(fill="x", padx=20, pady=(2, 4))
@@ -286,7 +285,7 @@ class App:
                                      font=("Segoe UI", 10), relief="flat",
                                      cursor="hand2", padx=10, pady=6)
         self.btn_destino.pack(side="left")
-        self.var_destino = tk.StringVar(value="Se guarda en 'salida'. Elige otra carpeta ANTES de procesar (si lo haces despues, te ofrezco copiarlas).")
+        self.var_destino = tk.StringVar(value="Cada pedido se guarda solo en su carpeta (pedidos > fecha + cliente). Usa 'Guardar en...' solo si quieres otro destino.")
         tk.Label(dest, textvariable=self.var_destino, bg=COLOR_FONDO, fg="#CFCFCF",
                  font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
 
@@ -495,7 +494,9 @@ class App:
         if not rutas:
             return
         firmas = [Path(r) for r in rutas]
-        core.SALIDA = self.carpeta_salida or self.salida_default
+        cli = self.var_cliente.get()
+        core.SALIDA = self.carpeta_salida or core.carpeta_pedido(
+            "" if cli == SIN_CLIENTE else cli)
         self.resultados_listos = []
         self.limpiar_galeria()
         self.procesando = True
@@ -801,8 +802,12 @@ class App:
         self.preset["color_auto"] = self.var_color_auto.get()
         self.preset["saturacion_auto"] = self.var_sat_auto.get()
         self.preset["piso_negro"] = self._leer_negros()
-        # Carpeta destino (la elegida o la de por defecto)
-        core.SALIDA = self.carpeta_salida or self.salida_default
+        # Carpeta destino: la elegida con "Guardar en...", o la carpeta propia
+        # del pedido (pedidos/<fecha> <cliente>) para que cada trabajo quede
+        # junto y ordenado en vez de mezclarse en una sola bolsa.
+        cli = self.var_cliente.get()
+        core.SALIDA = self.carpeta_salida or core.carpeta_pedido(
+            "" if cli == SIN_CLIENTE else cli)
         self.resultados_listos = []
         self._guardar_ultimo(medidas[0], medidas[1], self.var_formato.get())
         self.limpiar_galeria()

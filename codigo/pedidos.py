@@ -170,6 +170,21 @@ def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):
     return destino_pdf
 
 
+# ---------- carpeta por pedido ----------
+
+def carpeta_pedido(base, cliente=""):
+    # Carpeta propia para cada trabajo: pedidos/<fecha> <cliente>/. Asi las
+    # fotos, firmas y hoja de aprobacion de un pedido quedan JUNTAS, en vez de
+    # mezclarse todos los trabajos en una sola bolsa. Mismo dia + mismo
+    # cliente = misma carpeta (los pedidos suelen llegar por partes).
+    limpio = "".join(c for c in (cliente or "")
+                     if c.isalnum() or c in " -_").strip()
+    nombre = time.strftime("%Y-%m-%d") + (" " + limpio if limpio else " pedido")
+    carpeta = Path(base) / "pedidos" / nombre
+    carpeta.mkdir(parents=True, exist_ok=True)
+    return carpeta
+
+
 # ---------- registro de lotes (alimenta la recompra) ----------
 
 def escribir_lote(archivo_csv, cliente, total, renombradas, carpeta):

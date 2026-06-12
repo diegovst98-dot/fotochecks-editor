@@ -144,6 +144,11 @@ def registrar_lote(cliente, total, renombradas, carpeta):
     _pedidos.escribir_lote(BASE / "lotes.csv", cliente, total, renombradas, carpeta)
 
 
+def carpeta_pedido(cliente=""):
+    # Carpeta del pedido de HOY para este cliente (pedidos/<fecha> <cliente>).
+    return _pedidos.carpeta_pedido(BASE, cliente)
+
+
 def recolectar_fotos():
     # Si se arrastraron fotos o carpetas encima del .exe, vienen como argumentos.
     # Si no, se usan las fotos de la carpeta 'entrada'.
