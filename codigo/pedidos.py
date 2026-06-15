@@ -108,6 +108,28 @@ def mensaje_para_cliente(rev):
     return cabecera + "\n" + "\n".join(lineas).rstrip() + "\n" + pie
 
 
+# ---------- aviso de recorte dudoso ----------
+
+def recorte_dudoso(alpha_fino, alpha_clasico, umbral=1.2):
+    # Marca un recorte como DUDOSO cuando dos modelos distintos (el fino isnet y
+    # el clasico u2net) discrepan mucho en la silueta: ahi es muy probable que
+    # uno se haya equivocado (ropa clara confundida con la pared, pelo dificil).
+    # Es el aviso para reprocesar ESA foto con "Foto dificil" (BiRefNet).
+    # Una metrica de una sola imagen (contraste, "fuzz" del alfa) NO predice
+    # esto de forma fiable (medido 2026-06-15: la camisa blanca de bajo
+    # contraste salia bien y la beige de contraste medio salia rota); el
+    # DESACUERDO entre dos modelos si separa limpio. Umbral 1.2% calibrado con
+    # las 10 fotos reales: las 6 limpias dieron <=0.81%, las 3 problematicas
+    # 1.48 / 2.64 / 4.93%.
+    a1 = np.asarray(alpha_fino) >= 128
+    a2 = np.asarray(alpha_clasico) >= 128
+    union = int((a1 | a2).sum())
+    if union < 500:
+        return False
+    inter = int((a1 & a2).sum())
+    return (1.0 - inter / union) * 100.0 > umbral
+
+
 # ---------- hoja de aprobacion (PDF) ----------
 
 def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):

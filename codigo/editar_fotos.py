@@ -37,7 +37,7 @@ from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
                      _subir_negros, _limpiar_mascara, _alfa_fino, _descontaminar,
                      _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
-                     hoja_aprobacion)
+                     hoja_aprobacion, recorte_dudoso)
 
 # Carpeta de salida ACTIVA. La interfaz la reasigna (core.SALIDA = ...) cuando
 # el usuario elige "Guardar en..."; por eso vive aqui y las funciones la leen
@@ -45,12 +45,17 @@ from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
 SALIDA = BASE / "salida"
 
 
-def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
+def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
+                 sin_fondo=None):
     # El pipeline completo de UNA foto: quitar fondo -> limpiar borde ->
     # encuadrar por la cara -> correcciones de color -> tamano final -> guardar.
+    # 'sin_fondo' opcional: si ya se corrio el modelo afuera (para evaluar el
+    # recorte), se reusa y NO se vuelve a correr; si es None, se calcula aqui
+    # como siempre (asi las salidas no cambian: el candado de doradas sigue OK).
     from rembg import remove  # carga diferida (ya quedo cargado tras new_session)
     original = Image.open(ruta).convert("RGB")
-    sin_fondo = remove(original, session=session)  # RGBA con transparencia
+    if sin_fondo is None:
+        sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
     if fino:
         # Modelo fino (isnet): borde firme + peinado ordenado.
@@ -141,6 +146,25 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
     else:
         final.save(destino, "PNG", dpi=(300, 300))
     return destino, cara is not None, pixelado
+
+
+def evaluar_recorte(ruta, session_fino, session_clasica):
+    # Corre el modelo fino (el que usa el pipeline) y, si hay un modelo clasico
+    # distinto, mide el desacuerdo entre ambos para marcar recortes DUDOSOS
+    # (ropa clara / pelo dificil que conviene rehacer en "Foto dificil").
+    # Devuelve (sin_fondo_fino, dudoso): el sin_fondo se reusa en procesar_una
+    # para no correr el modelo fino dos veces (solo se suma el clasico, ~1s).
+    from rembg import remove
+    original = Image.open(ruta).convert("RGB")
+    sin_fondo = remove(original, session=session_fino)
+    dudoso = False
+    if session_clasica is not None:
+        try:
+            a_clas = remove(original, session=session_clasica).split()[-1]
+            dudoso = recorte_dudoso(sin_fondo.split()[-1], a_clas)
+        except Exception:
+            dudoso = False
+    return sin_fondo, dudoso
 
 
 def procesar_firma(ruta, nombre_salida=None):

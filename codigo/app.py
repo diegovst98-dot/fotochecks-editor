@@ -91,6 +91,7 @@ class App:
         self.session = None
         self.fino = False         # True si el modelo fino de recorte esta activo
         self.session_max = None   # modelo de maxima calidad (solo si se usa)
+        self.session_clasica = None  # 2do modelo (u2net) solo para detectar dudosos
         self.modo_maximo = False  # el lote actual va en calidad maxima
         self.thumbs = []          # referencias a las imagenes (evita que se borren)
         self.cola = queue.Queue()
@@ -240,6 +241,8 @@ class App:
                        command=self._toggle_brillo, bg=COLOR_FONDO, fg="#CFCFCF",
                        selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
                        activeforeground=COLOR_TEXTO).pack(side="left", padx=(6, 0))
+        tk.Label(medidas, text="(recomendado activo)", bg=COLOR_FONDO, fg="#7a7a7a",
+                 font=("Segoe UI", 8)).pack(side="left", padx=(2, 0))
 
         # Formato de salida: PNG (mas calidad, pesa mas) o JPG (mas liviano).
         self.var_formato = tk.StringVar(value=ultimo["formato"])
@@ -270,6 +273,13 @@ class App:
             tk.Radiobutton(op, text=txt, variable=self.var_fondo, value=val,
                            bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
                            activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
+        # Calidad maxima para TODO el lote (BiRefNet): recorte impecable hasta en
+        # ropa clara, pero ~1 min por foto. Para lotes chicos o muy importantes.
+        self.var_max_lote = tk.BooleanVar(value=False)
+        tk.Checkbutton(op, text="Calidad maxima (todo el lote)",
+                       variable=self.var_max_lote, bg=COLOR_FONDO, fg="#CFCFCF",
+                       selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
+                       activeforeground=COLOR_TEXTO).pack(side="left", padx=(18, 0))
 
         # --- Correccion de color (automatica por foto) + anti-mancha de negros ---
         col = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
@@ -494,6 +504,16 @@ class App:
         return ancho, alto
 
     # ---------- elegir fotos ----------
+    def _confirmar_maxima(self, n):
+        # Aviso de tiempo (y descarga la 1a vez) cuando se pide calidad maxima
+        # para todo un lote: BiRefNet tarda hasta ~1 min por foto.
+        aviso = (f"Procesaras {n} foto(s) en CALIDAD MAXIMA (BiRefNet). El recorte "
+                 "sale impecable hasta en ropa clara, pero tarda mucho mas: "
+                 "hasta ~1 minuto por foto. Es normal, no esta colgado.")
+        if not core.modelo_maximo_descargado():
+            aviso += "\n\nLa primera vez descargara el modelo (~900 MB, una sola vez)."
+        return messagebox.askokcancel("Calidad maxima", aviso)
+
     def elegir_fotos(self):
         if self.procesando:
             return
@@ -502,7 +522,10 @@ class App:
             filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff"),
                        ("Todos los archivos", "*.*")])
         if rutas:
-            self.iniciar([Path(r) for r in rutas])
+            maxima = self.var_max_lote.get()
+            if maxima and not self._confirmar_maxima(len(rutas)):
+                return
+            self.iniciar([Path(r) for r in rutas], maxima=maxima)
 
     def elegir_carpeta(self):
         if self.procesando:
@@ -510,7 +533,10 @@ class App:
         d = filedialog.askdirectory(title="Elegir carpeta con fotos")
         if d:
             fotos = [q for q in sorted(Path(d).iterdir()) if q.suffix.lower() in EXT]
-            self.iniciar(fotos)
+            maxima = self.var_max_lote.get()
+            if maxima and fotos and not self._confirmar_maxima(len(fotos)):
+                return
+            self.iniciar(fotos, maxima=maxima)
 
     def abrir_salida(self):
         try:
@@ -907,12 +933,23 @@ class App:
                     LOG.info("modelo de recorte: " + ("fino (isnet)" if self.fino
                              else "CLASICO - no se pudo descargar el fino"))
                 session, fino = self.session, self.fino
+            # Auto-marcado de recortes DUDOSOS: solo en modo normal con el
+            # modelo fino activo (en calidad maxima ya es lo mejor que hay, y
+            # con el clasico no hay 2do modelo con que comparar). Corre u2net
+            # ademas de isnet y marca donde discrepan (~1s extra por foto).
+            detectar_dudosos = (not self.modo_maximo) and fino
+            if detectar_dudosos and self.session_clasica is None:
+                try:
+                    self.session_clasica = core.new_session("u2net_human_seg")
+                except Exception:
+                    self.session_clasica = None
+                    detectar_dudosos = False
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             self.cola.put(("inicio", len(fotos)))
             ok = 0
             usados = {}  # codigo -> archivo, para detectar duplicados
             resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [],
-                       "duplicado": [], "pixelado": []}
+                       "duplicado": [], "pixelado": [], "dudoso": []}
             for i, ruta in enumerate(fotos, 1):
                 try:
                     nombre_salida = None
@@ -932,8 +969,16 @@ class App:
                         else:
                             resumen["sin_match"].append(ruta.name)
                             revisar = True
+                    sin_fondo = None
+                    if detectar_dudosos:
+                        sin_fondo, dudoso = core.evaluar_recorte(
+                            ruta, session, self.session_clasica)
+                        if dudoso:
+                            resumen["dudoso"].append(ruta.name)
+                            revisar = True
                     destino, hubo_cara, pixelado = core.procesar_una(
-                        ruta, self.preset, session, nombre_salida, fino=fino)
+                        ruta, self.preset, session, nombre_salida, fino=fino,
+                        sin_fondo=sin_fondo)
                     if not hubo_cara:
                         resumen["sin_cara"].append(ruta.name)
                         revisar = True
@@ -1153,6 +1198,11 @@ class App:
                 partes.append(f"\n- Salieron borrosas/poca resolucion ({len(resumen['pixelado'])}): "
                               + ", ".join(resumen["pixelado"][:8])
                               + (" ..." if len(resumen["pixelado"]) > 8 else ""))
+            if resumen.get("dudoso"):
+                partes.append(f"\n- Recorte dudoso (ropa clara o pelo dificil): conviene "
+                              f"rehacerlas con 'Foto dificil' ({len(resumen['dudoso'])}): "
+                              + ", ".join(resumen["dudoso"][:8])
+                              + (" ..." if len(resumen["dudoso"]) > 8 else ""))
         messagebox.showinfo("Resumen", "".join(partes))
 
 
