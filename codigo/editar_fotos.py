@@ -34,7 +34,8 @@ from encuadre import (ruta_cascade, detectar_cara, recortar_region,
                       recortar_alpha, top_cabeza, ancho_persona,
                       fila_hombros, caja_encuadre)
 from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
-                     _subir_negros, _limpiar_mascara, _alfa_fino, _descontaminar)
+                     _subir_negros, _limpiar_mascara, _alfa_fino, _descontaminar,
+                     _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
                      hoja_aprobacion)
 
@@ -82,7 +83,14 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False):
         try:
             base = recortar_region(original, left, top, crop_w, crop_h,
                                    preset["color_fondo"])
-            limpia = _descontaminar(base, alpha_rec)
+            # la caja de la cara, llevada a coordenadas del recorte, acota
+            # donde el retoque puede actuar (bahias de corona y bolsones)
+            cara_rec = ((cara[0] - left, cara[1] - top, cara[2], cara[3])
+                        if cara is not None else None)
+            # primero recortar el cerco de fondo pegado al contorno (afina la
+            # silueta); recien despues descontaminar el color del borde
+            alpha_rec = _recortar_cerco(base, alpha_rec, cara_rec)
+            limpia = _descontaminar(base, alpha_rec, cara_rec)
             if transparente:
                 encuadrada = limpia
             else:
