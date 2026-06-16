@@ -98,6 +98,7 @@ class App:
         self.procesando = False
         self.cancelado = False    # el usuario pidio cortar el proceso en curso
         self.codigos = []         # registros del Excel (codigo + nombre)
+        self.dudosas = []         # originales marcados "recorte dudoso" en el ultimo lote
         self.ruta_excel = None
         self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
         self.rev_fotos = []          # fotos elegidas en la pestaña Revisar pedido
@@ -193,6 +194,17 @@ class App:
                                      relief="flat", cursor="hand2",
                                      padx=12, pady=10)
         self.btn_dificil.pack(side="left", padx=(10, 0))
+        # Cierra el lazo del "recorte dudoso": de UN CLIC rehace SOLO las fotos
+        # marcadas en rojo con BiRefNet (mejor matte). Se habilita tras un lote
+        # normal que haya dejado dudosas.
+        self.btn_mejorar = tk.Button(botones, text="  Mejorar las marcadas  ",
+                                     command=self.mejorar_marcadas,
+                                     bg="#5a5a5a", fg=COLOR_TEXTO,
+                                     activebackground="#6e6e6e",
+                                     font=("Segoe UI", 11),
+                                     relief="flat", cursor="hand2",
+                                     padx=12, pady=10, state="disabled")
+        self.btn_mejorar.pack(side="left", padx=(10, 0))
         self.btn_abrir = tk.Button(botones, text="  Abrir resultados  ",
                                    command=self.abrir_salida,
                                    bg="#5a5a5a", fg=COLOR_TEXTO,
@@ -452,6 +464,15 @@ class App:
         if not messagebox.askokcancel("Calidad maxima", aviso):
             return
         self.iniciar(fotos, maxima=True)
+
+    def mejorar_marcadas(self):
+        # Un clic: rehace SOLO las fotos marcadas "recorte dudoso" en el ultimo
+        # lote, con BiRefNet (mejor matte). Sobrescribe las salidas de esas fotos.
+        if self.procesando or not self.dudosas:
+            return
+        if not self._confirmar_maxima(len(self.dudosas)):
+            return
+        self.iniciar(self.dudosas, maxima=True)
 
     def elegir_destino(self):
         if self.procesando:
@@ -950,6 +971,9 @@ class App:
         # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
         self.btn_aprobacion.config(
             state="normal" if (activo and self.resultados_listos) else "disabled")
+        # "Mejorar las marcadas" solo si el ultimo lote dejo fotos dudosas.
+        self.btn_mejorar.config(
+            state="normal" if (activo and self.dudosas) else "disabled")
 
     def worker(self, fotos):
         try:
@@ -993,7 +1017,7 @@ class App:
             ok = 0
             usados = {}  # codigo -> archivo, para detectar duplicados
             resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [],
-                       "duplicado": [], "pixelado": [], "dudoso": []}
+                       "duplicado": [], "pixelado": [], "dudoso": [], "dudoso_rutas": []}
             for i, ruta in enumerate(fotos, 1):
                 if self.cancelado:
                     break
@@ -1021,6 +1045,7 @@ class App:
                             ruta, session, self.session_clasica)
                         if dudoso:
                             resumen["dudoso"].append(ruta.name)
+                            resumen["dudoso_rutas"].append(str(ruta))
                             revisar = True
                     destino, hubo_cara, pixelado = core.procesar_una(
                         ruta, self.preset, session, nombre_salida, fino=fino,
@@ -1072,6 +1097,9 @@ class App:
                     core.registrar_lote("" if cli == SIN_CLIENTE else cli,
                                         ok, renombradas, core.SALIDA)
                     LOG.info(f"lote listo: {ok}/{total} ok | renombradas {renombradas}")
+                    # Guardar los originales dudosos para el boton "Mejorar las
+                    # marcadas" (terminar() lo habilita si self.dudosas tiene algo).
+                    self.dudosas = [Path(r) for r in resumen.get("dudoso_rutas", [])]
                     self.mostrar_resumen(ok, total, resumen)
                     self.terminar()
                     self.abrir_salida()
@@ -1260,8 +1288,8 @@ class App:
                               + ", ".join(resumen["pixelado"][:8])
                               + (" ..." if len(resumen["pixelado"]) > 8 else ""))
             if resumen.get("dudoso"):
-                partes.append(f"\n- Recorte dudoso (ropa clara o pelo dificil): conviene "
-                              f"rehacerlas con 'Foto dificil' ({len(resumen['dudoso'])}): "
+                partes.append(f"\n- Recorte dudoso (ropa clara o pelo dificil): dale al "
+                              f"boton 'Mejorar las marcadas' ({len(resumen['dudoso'])}): "
                               + ", ".join(resumen["dudoso"][:8])
                               + (" ..." if len(resumen["dudoso"]) > 8 else ""))
         messagebox.showinfo("Resumen", "".join(partes))
