@@ -131,38 +131,64 @@ def recorte_dudoso(alpha_fino, alpha_clasico, umbral=1.2):
 
 
 # ---------- hoja de aprobacion (PDF) ----------
+# Se dibuja con cv2 (NO con PIL.ImageDraw/ImageFont): esos submodulos de PIL no
+# viajan dentro del .exe (solo esta PIL.Image) y rompian la hoja con un
+# ImportError. REGLA DE ORO: todo lo que se use debe existir en el bundle, y
+# cv2 si esta (lo usa todo el motor). La fuente Hershey de cv2 es menos "bonita"
+# que Arial, pero la hoja es interna y se lee igual.
+
+# Tildes/ñ -> letras simples: cv2.putText solo dibuja ASCII (fuentes Hershey).
+_ACENTOS = str.maketrans(
+    "áéíóúÁÉÍÓÚñÑüÜàèìòùÀÈÌÒÙâêîôûäëïöÿçÇ",
+    "aeiouAEIOUnNuUaeiouAEIOUaeiouaeioycC")
+
+
+def _ascii(texto):
+    t = (texto or "").translate(_ACENTOS)
+    return "".join(c if 32 <= ord(c) < 127 else "" for c in t)
+
+
+def _texto(lienzo, txt, x, y_top, escala, grosor, color, ancho_max=None):
+    # Dibuja texto estilo "esquina superior izquierda" como hacia PIL: cv2 ancla
+    # en la base inferior, asi que bajamos por la altura del texto. Si se pasa
+    # ancho_max, recorta el texto para que entre en la celda.
+    txt = _ascii(txt)
+    if ancho_max is not None:
+        while txt and cv2.getTextSize(
+                txt, cv2.FONT_HERSHEY_SIMPLEX, escala, grosor)[0][0] > ancho_max:
+            txt = txt[:-1]
+    if not txt:
+        return
+    (_, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, escala, grosor)
+    cv2.putText(lienzo, txt, (int(x), int(y_top + th)),
+                cv2.FONT_HERSHEY_SIMPLEX, escala, color, grosor, cv2.LINE_AA)
+
 
 def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):
     # Grilla de miniaturas (foto final + codigo Y NOMBRE de la persona) en PDF.
     # Su valor real: que el CLIENTE confirme que cada foto corresponde a la
     # persona correcta ANTES de imprimir (el error de identidad es el caro).
     # 'nombres' = dict codigo -> nombre completo (del Excel), opcional.
-    from PIL import ImageDraw, ImageFont
     AN, AL = 1240, 1754  # A4 vertical a 150 dpi
     MARGEN, COLS = 60, 4
     celda_w = (AN - 2 * MARGEN - (COLS - 1) * 16) // COLS
     celda_h = int(celda_w * 1.05) + 34
-    try:
-        F_TIT = ImageFont.truetype("arialbd.ttf", 30)
-        F_SUB = ImageFont.truetype("arial.ttf", 19)
-        F_PIE = ImageFont.truetype("arial.ttf", 17)
-    except Exception:
-        F_TIT = F_SUB = F_PIE = ImageFont.load_default()
+    # Colores en orden RGB (el lienzo se interpreta como RGB al guardar).
+    GRIS_OSC, GRIS, GRIS_CL = (30, 30, 30), (90, 90, 90), (200, 200, 200)
+    BORDE, NEGRO, ROJO = (210, 210, 210), (40, 40, 40), (200, 60, 60)
 
     fecha = time.strftime("%d/%m/%Y")
     paginas = []
     por_pagina = COLS * max(1, (AL - 170 - MARGEN) // (celda_h + 14))
     for p0 in range(0, len(archivos), por_pagina):
-        pag = Image.new("RGB", (AN, AL), (255, 255, 255))
-        d = ImageDraw.Draw(pag)
-        d.text((MARGEN, 42), "DISECOD - Hoja de aprobacion de fotochecks",
-               fill=(30, 30, 30), font=F_TIT)
+        pag = np.full((AL, AN, 3), 255, np.uint8)
+        _texto(pag, "DISECOD - Hoja de aprobacion de fotochecks",
+               MARGEN, 42, 1.0, 2, GRIS_OSC)
         sub = f"{('Cliente: ' + cliente + '   |   ') if cliente else ''}Fecha: {fecha}   |   {len(archivos)} foto(s)"
-        d.text((MARGEN, 86), sub, fill=(90, 90, 90), font=F_SUB)
-        d.text((MARGEN, 114),
-               "Revise que cada foto tenga el nombre/codigo correcto y responda "
-               "APROBADO para imprimir.", fill=(90, 90, 90), font=F_SUB)
-        d.line((MARGEN, 148, AN - MARGEN, 148), fill=(200, 200, 200), width=2)
+        _texto(pag, sub, MARGEN, 88, 0.6, 1, GRIS)
+        _texto(pag, "Revise que cada foto tenga el nombre/codigo correcto y "
+               "responda APROBADO para imprimir.", MARGEN, 116, 0.6, 1, GRIS)
+        cv2.line(pag, (MARGEN, 148), (AN - MARGEN, 148), GRIS_CL, 2)
         y = 170
         for i, ruta in enumerate(archivos[p0:p0 + por_pagina]):
             col = i % COLS
@@ -174,18 +200,21 @@ def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):
                 blanco = Image.new("RGBA", im.size, (255, 255, 255, 255))
                 im = Image.alpha_composite(blanco, im).convert("RGB")
                 im.thumbnail((celda_w - 8, celda_h - 38))
-                pag.paste(im, (x + (celda_w - im.width) // 2, y + 4))
-                d.rectangle((x, y, x + celda_w, y + celda_h - 30),
-                            outline=(210, 210, 210), width=1)
+                arr = np.asarray(im)
+                px = x + (celda_w - im.width) // 2
+                py = y + 4
+                pag[py:py + arr.shape[0], px:px + arr.shape[1]] = arr
+                cv2.rectangle(pag, (x, y), (x + celda_w, y + celda_h - 30),
+                              BORDE, 1)
             except Exception:
-                d.text((x + 8, y + 8), "(error)", fill=(200, 60, 60), font=F_PIE)
+                _texto(pag, "(error)", x + 8, y + 8, 0.5, 1, ROJO)
             stem = Path(ruta).stem
             etiqueta = stem
             if nombres and stem in nombres:
                 etiqueta = f"{stem} - {nombres[stem]}"
-            d.text((x + 4, y + celda_h - 24), etiqueta[:30],
-                   fill=(40, 40, 40), font=F_PIE)
-        paginas.append(pag)
+            _texto(pag, etiqueta, x + 4, y + celda_h - 26, 0.5, 1, NEGRO,
+                   ancho_max=celda_w - 8)
+        paginas.append(Image.fromarray(pag))
     destino_pdf = Path(destino_pdf)
     paginas[0].save(destino_pdf, "PDF", resolution=150.0,
                     save_all=True, append_images=paginas[1:])

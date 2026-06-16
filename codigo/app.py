@@ -96,6 +96,7 @@ class App:
         self.thumbs = []          # referencias a las imagenes (evita que se borren)
         self.cola = queue.Queue()
         self.procesando = False
+        self.cancelado = False    # el usuario pidio cortar el proceso en curso
         self.codigos = []         # registros del Excel (codigo + nombre)
         self.ruta_excel = None
         self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
@@ -280,6 +281,16 @@ class App:
                        variable=self.var_max_lote, bg=COLOR_FONDO, fg="#CFCFCF",
                        selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
                        activeforeground=COLOR_TEXTO).pack(side="left", padx=(18, 0))
+        # Aclaracion: el fondo lo decide el selector Blanco/Transparente de
+        # arriba. "Foto dificil" y "Calidad maxima" SOLO mejoran el recorte (la
+        # calidad del calado), no cambian el fondo. Para PNG sin fondo hay que
+        # marcar "Transparente" (si no, sale en blanco aunque sea PNG).
+        tk.Label(self.tab_fotos,
+                 text="Para un PNG sin fondo, marca 'Transparente' arriba. "
+                      "'Foto dificil' y 'Calidad maxima' solo mejoran el recorte, "
+                      "no cambian el fondo.",
+                 bg=COLOR_FONDO, fg="#7a7a7a",
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=20)
 
         # --- Correccion de color (automatica por foto) + anti-mancha de negros ---
         col = tk.Frame(self.tab_fotos, bg=COLOR_FONDO)
@@ -337,8 +348,21 @@ class App:
         tk.Label(root, textvariable=self.estado, bg=COLOR_FONDO, fg=COLOR_LIMA,
                  font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=20)
 
-        self.barra = ttk.Progressbar(root, mode="determinate")
-        self.barra.pack(fill="x", padx=20, pady=(4, 10))
+        prog = tk.Frame(root, bg=COLOR_FONDO)
+        prog.pack(fill="x", padx=20, pady=(4, 10))
+        # Cancelar: corta el proceso en curso sin esperar a que termine todo el
+        # lote (se detiene apenas acaba la foto que esta en mano). Solo se
+        # habilita mientras hay un proceso corriendo.
+        self.btn_cancelar = tk.Button(prog, text="  Cancelar  ",
+                                      command=self.cancelar,
+                                      bg="#7a3a3a", fg=COLOR_TEXTO,
+                                      activebackground="#9a4a4a",
+                                      font=("Segoe UI", 10, "bold"),
+                                      relief="flat", cursor="hand2",
+                                      padx=12, pady=4, state="disabled")
+        self.btn_cancelar.pack(side="right", padx=(10, 0))
+        self.barra = ttk.Progressbar(prog, mode="determinate")
+        self.barra.pack(side="left", fill="x", expand=True)
 
         # Zona de miniaturas con scroll
         cont = tk.Frame(root, bg="#2b2b2b", highlightthickness=1,
@@ -562,10 +586,14 @@ class App:
         self.resultados_listos = []
         self.limpiar_galeria()
         self.procesando = True
+        self.cancelado = False
         self._activar_botones(False)
+        self._activar_cancelar(True)
         self.barra.config(maximum=len(firmas), value=0)
         self.estado.set("Procesando firmas...")
-        threading.Thread(target=self.worker_firmas, args=(firmas,), daemon=True).start()
+        threading.Thread(target=self.worker_firmas,
+                         args=(firmas, self.var_firma_color.get()),
+                         daemon=True).start()
         self.root.after(100, self.revisar_cola)
 
     # ---------- pestañas nuevas ----------
@@ -644,12 +672,24 @@ class App:
 
     def _armar_tab_firmas(self):
         t = self.tab_firmas
-        tk.Label(t, text="Convierte firmas escaneadas o fotografiadas en tinta negra "
-                         "con fondo transparente, listas para el carnet.",
+        tk.Label(t, text="Convierte firmas escaneadas o fotografiadas en tinta de un "
+                         "solo color con fondo transparente, listas para el carnet.",
                  bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(14, 0))
         tk.Label(t, text="Sirve cualquier firma con tinta oscura sobre papel claro: "
                          "salen recortadas al trazo, en PNG.",
                  bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20)
+        # Color del trazo: negro (lo normal) o blanco para diseños oscuros.
+        self.var_firma_color = tk.StringVar(value="negro")
+        fila_color = tk.Frame(t, bg=COLOR_FONDO)
+        fila_color.pack(anchor="w", padx=20, pady=(10, 0))
+        tk.Label(fila_color, text="Color de la firma:", bg=COLOR_FONDO,
+                 fg=COLOR_TEXTO, font=("Segoe UI", 10, "bold")).pack(side="left")
+        for txt, val in (("Negra (para fondo claro)", "negro"),
+                         ("Blanca (para fondo oscuro)", "blanco")):
+            tk.Radiobutton(fila_color, text=txt, variable=self.var_firma_color,
+                           value=val, bg=COLOR_FONDO, fg="#CFCFCF",
+                           selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
+                           activeforeground=COLOR_TEXTO).pack(side="left", padx=(8, 0))
         self.btn_firma = tk.Button(t, text="  Elegir firmas...  ",
                                    command=self.elegir_firmas,
                                    bg=COLOR_LILA, fg="#1d1d1d",
@@ -805,15 +845,17 @@ class App:
         except Exception:
             self.cola.put(("fatal", traceback.format_exc()))
 
-    def worker_firmas(self, firmas):
+    def worker_firmas(self, firmas, color="negro"):
         # Las firmas no usan la IA: salen al toque (umbral por luminosidad).
         try:
             core.SALIDA.mkdir(parents=True, exist_ok=True)
             ok = 0
             fallas = []
             for i, ruta in enumerate(firmas, 1):
+                if self.cancelado:
+                    break
                 try:
-                    destino = core.procesar_firma(ruta)
+                    destino = core.procesar_firma(ruta, color=color)
                     ok += 1
                     self.cola.put(("una", i, str(destino), False))
                 except Exception as e:
@@ -875,7 +917,9 @@ class App:
         self._guardar_ultimo(medidas[0], medidas[1], self.var_formato.get())
         self.limpiar_galeria()
         self.procesando = True
+        self.cancelado = False
         self._activar_botones(False)
+        self._activar_cancelar(True)
         self.barra.config(maximum=len(fotos), value=0)
         if maxima:
             if self.session_max is None and not core.modelo_maximo_descargado():
@@ -951,6 +995,8 @@ class App:
             resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [],
                        "duplicado": [], "pixelado": [], "dudoso": []}
             for i, ruta in enumerate(fotos, 1):
+                if self.cancelado:
+                    break
                 try:
                     nombre_salida = None
                     revisar = False
@@ -1015,7 +1061,8 @@ class App:
                     self.barra.config(value=msg[1])
                 elif tag == "fin":
                     ok, total, resumen = msg[1], msg[2], msg[3]
-                    self.estado.set(f"Listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
+                    cab = "Cancelado. " if self.cancelado else ""
+                    self.estado.set(f"{cab}Listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
                     # Registrar el lote (cliente, cantidad, fecha) para la recompra
                     renombradas = 0
                     if self.codigos:
@@ -1067,10 +1114,11 @@ class App:
                 elif tag == "fin_firmas":
                     ok, total, fallas = msg[1], msg[2], msg[3]
                     LOG.info(f"firmas listas: {ok}/{total}")
-                    self.estado.set(f"Firmas listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
+                    cab = "Cancelado. " if self.cancelado else ""
+                    self.estado.set(f"{cab}Firmas listas: {ok} de {total}. Guardadas en: {core.SALIDA}")
                     texto = (f"Se procesaron {ok} de {total} firma(s).\n"
-                             "Salen en PNG con tinta negra y fondo transparente, "
-                             "recortadas al trazo.")
+                             "Salen en PNG con fondo transparente, recortadas al "
+                             "trazo, en el color que elegiste.")
                     if fallas:
                         texto += "\n\nNo se pudieron procesar:\n- " + "\n- ".join(fallas[:6])
                         texto += ("\n\nConsejo: la firma debe verse oscura sobre "
@@ -1091,6 +1139,19 @@ class App:
     def terminar(self):
         self.procesando = False
         self._activar_botones(True)
+        self._activar_cancelar(False)
+
+    def _activar_cancelar(self, activo):
+        self.btn_cancelar.config(state="normal" if activo else "disabled")
+
+    def cancelar(self):
+        # No corta en seco a media foto (eso podria dejar un archivo a medias):
+        # marca la bandera y el worker se detiene al terminar la foto en curso.
+        if not self.procesando:
+            return
+        self.cancelado = True
+        self._activar_cancelar(False)
+        self.estado.set("Cancelando... se detiene al terminar la foto actual.")
 
     # ---------- caja negra ----------
     def _error_interfaz(self, exc, val, tb):

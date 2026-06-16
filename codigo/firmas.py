@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 
-def procesar(ruta, carpeta_salida, nombre_salida=None):
+def procesar(ruta, carpeta_salida, nombre_salida=None, color="negro"):
     img = Image.open(ruta).convert("RGB")
     gris = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2GRAY)
 
@@ -49,10 +49,14 @@ def procesar(ruta, carpeta_salida, nombre_salida=None):
     x0, x1 = max(int(xs.min()) - m, 0), min(int(xs.max()) + m, alfa.shape[1] - 1)
     alfa = alfa[y0:y1 + 1, x0:x1 + 1]
 
-    # Tinta negra pura sobre fondo transparente (PNG).
+    # Tinta de un solo color (negra por defecto) sobre fondo transparente (PNG).
+    # "blanco" sirve para diseños de carnet oscuros, donde la firma negra no se
+    # veria. Solo cambia el color del trazo; la forma y el alfa son los mismos.
     a8 = (alfa * 255).astype(np.uint8)
     h, w = a8.shape
     lienzo = np.zeros((h, w, 4), dtype=np.uint8)
+    if color == "blanco":
+        lienzo[..., 0:3] = 255
     lienzo[..., 3] = a8
     final = Image.fromarray(lienzo, "RGBA")
 
