@@ -131,6 +131,19 @@ def _alfa_fino(alpha, conservar_pelo=False):
     return Image.fromarray(s.astype(np.uint8))
 
 
+def _alfa_minimo(alpha, sigma=1.6):
+    # POST-PROCESO MINIMO (decision 2026-06-16, tras evaluar la ingenieria):
+    # el matte del modelo ya es bueno; solo se SUAVIZA el borde (antialias) para
+    # quitar el dentado, SIN apertura ni erosion de cerco -- esas eran las que
+    # mordian/comian el pelo y causaban la oscilacion v10->v27. La limpieza del
+    # color del borde la hace _descontaminar despues. Sirve igual para fondo
+    # blanco y de color (probado: sin halo sobre azul ni magenta). Reemplaza a
+    # _alfa_fino/_recortar_cerco en el pipeline; esas quedan por si se necesitan.
+    a = np.asarray(alpha).astype(np.float32)
+    a = cv2.GaussianBlur(a, (0, 0), sigma)
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
 def _recortar_cerco(img, alpha, cara=None):
     # El modelo a veces deja una FRANJA ANCHA del fondo original pegada al
     # contorno con alfa solido (tipico con paredes grises/beige y pelo difuso):

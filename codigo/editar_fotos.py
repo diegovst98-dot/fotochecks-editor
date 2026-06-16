@@ -34,8 +34,8 @@ from encuadre import (ruta_cascade, detectar_cara, recortar_region,
                       recortar_alpha, top_cabeza, ancho_persona,
                       fila_hombros, caja_encuadre)
 from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
-                     _subir_negros, _limpiar_mascara, _alfa_fino, _descontaminar,
-                     _recortar_cerco)
+                     _subir_negros, _limpiar_mascara, _alfa_fino, _alfa_minimo,
+                     _descontaminar, _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
                      hoja_aprobacion, recorte_dudoso)
 
@@ -63,9 +63,10 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
     fmt = preset["formato_salida"].upper()
     transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if fino:
-        # Modelo fino (isnet): borde firme + peinado ordenado (o conservando el
-        # pelo si la salida es en blanco).
-        alpha = _alfa_fino(sin_fondo.split()[-1], conservar_pelo=not transparente)
+        # Modelo fino (isnet/birefnet): POST-PROCESO MINIMO (solo suavizado del
+        # borde). El matte del modelo ya es bueno; la cirugia pesada (apertura +
+        # erosion de cerco) era la que mordia/dentaba el pelo (2026-06-16).
+        alpha = _alfa_minimo(sin_fondo.split()[-1])
     else:
         # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
         # original asomandose por el pelo fino) que sobre blanco se ve como un
@@ -96,11 +97,10 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
             # donde el retoque puede actuar (bahias de corona y bolsones)
             cara_rec = ((cara[0] - left, cara[1] - top, cara[2], cara[3])
                         if cara is not None else None)
-            # El "recorte de cerco" (erosion del contorno) es lo que mas come
-            # pelo: solo se necesita sobre fondos de COLOR, donde el cerco del
-            # fondo se ve como halo. Sobre blanco se omite -> se respeta el pelo.
-            if transparente:
-                alpha_rec = _recortar_cerco(base, alpha_rec, cara_rec)
+            # Post-proceso MINIMO: solo limpieza de COLOR del borde
+            # (_descontaminar). La cirugia de cerco (erosion) se quito: era la
+            # que mordia el pelo, y el matte suavizado ya sale limpio en blanco
+            # y en color (2026-06-16).
             limpia = _descontaminar(base, alpha_rec, cara_rec)
             if transparente:
                 encuadrada = limpia
