@@ -92,7 +92,7 @@ def _limpiar_mascara(alpha, fuerza=1.0):
     return out.filter(ImageFilter.MinFilter(3))  # recorta 1px de borde residual
 
 
-def _alfa_fino(alpha):
+def _alfa_fino(alpha, conservar_pelo=False):
     # Silueta "PEINADO ORDENADO" (decision de producto con Diego, 2026-06-11):
     # para un fotocheck no hace falta conservar cada pelo suelto; un contorno
     # limpio y ordenado se ve mejor y elimina de raiz los defectos de borde
@@ -102,11 +102,16 @@ def _alfa_fino(alpha):
     #    lado menor de la foto (los huecos con color del fondo se van con
     #    ellos; aretes y monturas de lentes son mas gruesos y sobreviven),
     # 3) limpiar islas sueltas, 4) contorno suavizado con antialias de 1-2px.
+    # conservar_pelo=True (salida en BLANCO, feedback Diego 2026-06-16): apertura
+    # MUCHO menor -> respeta los mechones/rizos finos. El recorte firme (apertura
+    # 0.5% + _recortar_cerco) solo hace falta sobre fondos de COLOR, donde el pelo
+    # fino se ve como halo; sobre blanco no, y comerlo se ve peor.
     a = np.asarray(alpha).astype(np.float32)
     x = np.clip((a - 110.0) / (160.0 - 110.0), 0.0, 1.0)
     s = (x * x * (3.0 - 2.0 * x)) * 255.0
     binaria = (s > 127).astype(np.uint8)
-    r = max(2, round(min(binaria.shape) * 0.005))
+    frac = 0.0015 if conservar_pelo else 0.005
+    r = max(1 if conservar_pelo else 2, round(min(binaria.shape) * frac))
     nucleo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
     abierta = cv2.morphologyEx(binaria, cv2.MORPH_OPEN, nucleo)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(abierta, connectivity=8)

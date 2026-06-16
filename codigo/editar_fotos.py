@@ -57,9 +57,15 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
     if sin_fondo is None:
         sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
+    # El fondo de salida decide cuanto pelo conservar: sobre BLANCO se respeta
+    # el pelo fino; para TRANSPARENTE (credenciales de color) se usa el recorte
+    # firme que evita el halo (feedback Diego 2026-06-16).
+    fmt = preset["formato_salida"].upper()
+    transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if fino:
-        # Modelo fino (isnet): borde firme + peinado ordenado.
-        alpha = _alfa_fino(sin_fondo.split()[-1])
+        # Modelo fino (isnet): borde firme + peinado ordenado (o conservando el
+        # pelo si la salida es en blanco).
+        alpha = _alfa_fino(sin_fondo.split()[-1], conservar_pelo=not transparente)
     else:
         # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
         # original asomandose por el pelo fino) que sobre blanco se ve como un
@@ -78,8 +84,6 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
     alpha_rec = recortar_alpha(alpha, left, top, crop_w, crop_h)
     mask = np.asarray(alpha_rec) > 50  # persona vs fondo en el recorte
 
-    fmt = preset["formato_salida"].upper()
-    transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if fino:
         # Base de color limpia para AMBOS fondos (blanco y transparente): se
         # recorta el ORIGINAL (no la compuesta, que ya trae el blanco mezclado
@@ -92,9 +96,11 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
             # donde el retoque puede actuar (bahias de corona y bolsones)
             cara_rec = ((cara[0] - left, cara[1] - top, cara[2], cara[3])
                         if cara is not None else None)
-            # primero recortar el cerco de fondo pegado al contorno (afina la
-            # silueta); recien despues descontaminar el color del borde
-            alpha_rec = _recortar_cerco(base, alpha_rec, cara_rec)
+            # El "recorte de cerco" (erosion del contorno) es lo que mas come
+            # pelo: solo se necesita sobre fondos de COLOR, donde el cerco del
+            # fondo se ve como halo. Sobre blanco se omite -> se respeta el pelo.
+            if transparente:
+                alpha_rec = _recortar_cerco(base, alpha_rec, cara_rec)
             limpia = _descontaminar(base, alpha_rec, cara_rec)
             if transparente:
                 encuadrada = limpia
