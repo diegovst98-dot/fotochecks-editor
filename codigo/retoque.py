@@ -30,8 +30,11 @@ def _factor_brillo_auto(img, preset):
 
 def _corregir_color(img, mask):
     # Neutraliza el tinte (balance de blancos tipo "mundo gris") usando solo los
-    # pixeles de la persona, con limites para no matar el tono de piel. El fondo
-    # blanco no se toca.
+    # pixeles de la persona. PARCIAL a proposito (feedback Diego 2026-06-16): el
+    # mundo-gris a full le quitaba la calidez natural de la piel y la enfriaba
+    # (viraba a azul/verde). Se mezcla la ganancia hacia 1.0 (solo 35%) y se
+    # recorta fino [0.95, 1.07]: quita el exceso de color obvio pero la piel
+    # queda natural. El fondo blanco no se toca.
     arr = np.asarray(img).astype(np.float32)
     sel = arr[mask]
     if sel.shape[0] < 50:
@@ -39,7 +42,8 @@ def _corregir_color(img, mask):
     medias = sel.reshape(-1, 3).mean(axis=0)
     gris = float(medias.mean())
     ganancias = gris / np.clip(medias, 1.0, None)
-    ganancias = np.clip(ganancias, 0.85, 1.18)
+    ganancias = 1.0 + (ganancias - 1.0) * 0.35   # correccion parcial (suave)
+    ganancias = np.clip(ganancias, 0.95, 1.07)
     corr = np.clip(arr * ganancias, 0, 255)
     arr2 = arr.copy()
     arr2[mask] = corr[mask]  # solo la persona; el fondo blanco queda intacto
