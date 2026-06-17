@@ -22,6 +22,10 @@ tmp_ret = collect_all('openpyxl')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('certifi')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pypdfium2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pypdfium2_raw')   # binario nativo pdfium (la .dll)
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
@@ -33,10 +37,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['torch', 'torchvision', 'torchaudio', 'transformers', 'timm',
+              'kornia', 'ben2', 'tokenizers', 'safetensors', 'hf_xet', 'pandas',
+              'matplotlib', 'reportlab', 'sympy', 'networkx'],
     noarchive=False,
     optimize=0,
 )
+# EXCLUIR la pila de PyTorch/transformers (instalada solo para el bake-off de
+# motores; produccion usa onnxruntime, NO torch). Evita ~310 MB de bloat.
+a.binaries = [b for b in a.binaries if not (
+    'torch' in b[0].lower() or 'torch' in b[1].lower())]
 pyz = PYZ(a.pure)
 
 exe = EXE(
