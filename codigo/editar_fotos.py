@@ -23,6 +23,7 @@ from PIL import Image, ImageEnhance
 
 import firmas as _firmas
 import pedidos as _pedidos
+from pdf_import import pdf_disponible, pdf_a_imagenes
 from rutas import (BASE, ENTRADA, CONFIG, EXTENSIONES, base_dir,
                    cargar_preset, pausar)
 from motor_ia import (MODELO_FINO, MODELO_MAXIMO, new_session,

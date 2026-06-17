@@ -1,5 +1,5 @@
 {
-  "version": 29,
+  "version": 30,
   "archivos": [
     "app.py",
     "editar_fotos.py",
@@ -7,6 +7,7 @@
     "excel_codigos.py",
     "firmas.py",
     "motor_ia.py",
+    "pdf_import.py",
     "pedidos.py",
     "retoque.py",
     "rutas.py",

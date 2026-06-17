@@ -559,25 +559,54 @@ class App:
             aviso += "\n\nLa primera vez descargara el modelo (~900 MB, una sola vez)."
         return messagebox.askokcancel("Calidad maxima", aviso)
 
+    def _expandir_pdfs(self, rutas):
+        # Reemplaza cualquier PDF de la seleccion por la(s) foto(s) que trae
+        # adentro (1 por pagina). Si el .exe aun no trae la libreria de PDF,
+        # avisa y procesa el resto. PDF dañado se ignora en silencio.
+        rutas = [Path(r) for r in rutas]
+        if not any(r.suffix.lower() == ".pdf" for r in rutas):
+            return rutas
+        if not core.pdf_disponible():
+            messagebox.showinfo(
+                "PDF aun no disponible",
+                "Este programa todavia no abre archivos PDF (falta una "
+                "actualizacion del .exe). Pideselo al cliente en JPG o PNG.\n\n"
+                "Sigo con el resto de las fotos.")
+            return [r for r in rutas if r.suffix.lower() != ".pdf"]
+        temp = core.BASE / "_pdf_temp"
+        shutil.rmtree(temp, ignore_errors=True)
+        expandidas = []
+        for r in rutas:
+            if r.suffix.lower() == ".pdf":
+                expandidas.extend(core.pdf_a_imagenes(r, temp))
+            else:
+                expandidas.append(r)
+        return expandidas
+
     def elegir_fotos(self):
         if self.procesando:
             return
         rutas = filedialog.askopenfilenames(
-            title="Elegir fotos",
-            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff"),
+            title="Elegir fotos (acepta tambien PDF)",
+            filetypes=[("Imagenes y PDF", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.pdf"),
                        ("Todos los archivos", "*.*")])
         if rutas:
-            maxima = self.var_max_lote.get()
-            if maxima and not self._confirmar_maxima(len(rutas)):
+            fotos = self._expandir_pdfs(rutas)
+            if not fotos:
                 return
-            self.iniciar([Path(r) for r in rutas], maxima=maxima)
+            maxima = self.var_max_lote.get()
+            if maxima and not self._confirmar_maxima(len(fotos)):
+                return
+            self.iniciar(fotos, maxima=maxima)
 
     def elegir_carpeta(self):
         if self.procesando:
             return
         d = filedialog.askdirectory(title="Elegir carpeta con fotos")
         if d:
-            fotos = [q for q in sorted(Path(d).iterdir()) if q.suffix.lower() in EXT]
+            items = [q for q in sorted(Path(d).iterdir())
+                     if q.suffix.lower() in EXT or q.suffix.lower() == ".pdf"]
+            fotos = self._expandir_pdfs(items)
             maxima = self.var_max_lote.get()
             if maxima and fotos and not self._confirmar_maxima(len(fotos)):
                 return
