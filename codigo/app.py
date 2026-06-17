@@ -98,7 +98,6 @@ class App:
         self.procesando = False
         self.cancelado = False    # el usuario pidio cortar el proceso en curso
         self.codigos = []         # registros del Excel (codigo + nombre)
-        self.dudosas = []         # originales marcados "recorte dudoso" en el ultimo lote
         self.ruta_excel = None
         self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
         self.rev_fotos = []          # fotos elegidas en la pestaña Revisar pedido
@@ -111,9 +110,9 @@ class App:
         LOG.info(f"--- programa abierto: v{v} en {platform.node()} ---")
         # Cualquier error de la interfaz pasa por la caja negra (no se pierde)
         root.report_callback_exception = self._error_interfaz
-        root.geometry("820x780")
+        root.geometry("960x900")
         root.configure(bg=COLOR_FONDO)
-        root.minsize(680, 660)
+        root.minsize(840, 740)
 
         cab = tk.Frame(root, bg=COLOR_FONDO)
         cab.pack(fill="x", padx=20, pady=(18, 8))
@@ -194,17 +193,6 @@ class App:
                                      relief="flat", cursor="hand2",
                                      padx=12, pady=10)
         self.btn_dificil.pack(side="left", padx=(10, 0))
-        # Cierra el lazo del "recorte dudoso": de UN CLIC rehace SOLO las fotos
-        # marcadas en rojo con BiRefNet (mejor matte). Se habilita tras un lote
-        # normal que haya dejado dudosas.
-        self.btn_mejorar = tk.Button(botones, text="  Mejorar las marcadas  ",
-                                     command=self.mejorar_marcadas,
-                                     bg="#5a5a5a", fg=COLOR_TEXTO,
-                                     activebackground="#6e6e6e",
-                                     font=("Segoe UI", 11),
-                                     relief="flat", cursor="hand2",
-                                     padx=12, pady=10, state="disabled")
-        self.btn_mejorar.pack(side="left", padx=(10, 0))
         self.btn_abrir = tk.Button(botones, text="  Abrir resultados  ",
                                    command=self.abrir_salida,
                                    bg="#5a5a5a", fg=COLOR_TEXTO,
@@ -286,21 +274,22 @@ class App:
             tk.Radiobutton(op, text=txt, variable=self.var_fondo, value=val,
                            bg=COLOR_FONDO, fg="#CFCFCF", selectcolor="#2b2b2b",
                            activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO).pack(side="left")
-        # Calidad maxima para TODO el lote (BiRefNet): recorte impecable hasta en
-        # ropa clara, pero ~1 min por foto. Para lotes chicos o muy importantes.
-        self.var_max_lote = tk.BooleanVar(value=False)
-        tk.Checkbutton(op, text="Calidad maxima (todo el lote)",
-                       variable=self.var_max_lote, bg=COLOR_FONDO, fg="#CFCFCF",
+        # Auto-mejora: las fotos que salen con recorte DUDOSO (pelo dificil, ropa
+        # clara contra pared clara) se rehacen SOLAS con el motor de mas calidad
+        # (BiRefNet) dentro del mismo lote. Asi cada foto sale en su mejor version
+        # sin apretar nada. Solo la minoria dudosa tarda mas; se puede apagar si
+        # hay prisa. Reemplaza al viejo "Calidad maxima a todo el lote" (que
+        # forzaba el motor lento en TODAS sin beneficio).
+        self.var_auto_mejora = tk.BooleanVar(value=True)
+        tk.Checkbutton(op, text="Mejorar las dificiles automaticamente",
+                       variable=self.var_auto_mejora, bg=COLOR_FONDO, fg="#CFCFCF",
                        selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
                        activeforeground=COLOR_TEXTO).pack(side="left", padx=(18, 0))
-        # Aclaracion: el fondo lo decide el selector Blanco/Transparente de
-        # arriba. "Foto dificil" y "Calidad maxima" SOLO mejoran el recorte (la
-        # calidad del calado), no cambian el fondo. Para PNG sin fondo hay que
-        # marcar "Transparente" (si no, sale en blanco aunque sea PNG).
+        # Aclaracion: el fondo lo decide el selector Blanco/Transparente de arriba.
+        # "Foto dificil" SOLO mejora el recorte (el calado), no cambia el fondo.
         tk.Label(self.tab_fotos,
                  text="Para un PNG sin fondo, marca 'Transparente' arriba. "
-                      "'Foto dificil' y 'Calidad maxima' solo mejoran el recorte, "
-                      "no cambian el fondo.",
+                      "'Foto dificil' solo mejora el recorte, no cambia el fondo.",
                  bg=COLOR_FONDO, fg="#7a7a7a",
                  font=("Segoe UI", 8)).pack(anchor="w", padx=20)
 
@@ -465,15 +454,6 @@ class App:
             return
         self.iniciar(fotos, maxima=True)
 
-    def mejorar_marcadas(self):
-        # Un clic: rehace SOLO las fotos marcadas "recorte dudoso" en el ultimo
-        # lote, con BiRefNet (mejor matte). Sobrescribe las salidas de esas fotos.
-        if self.procesando or not self.dudosas:
-            return
-        if not self._confirmar_maxima(len(self.dudosas)):
-            return
-        self.iniciar(self.dudosas, maxima=True)
-
     def elegir_destino(self):
         if self.procesando:
             return
@@ -594,10 +574,7 @@ class App:
             fotos = self._expandir_pdfs(rutas)
             if not fotos:
                 return
-            maxima = self.var_max_lote.get()
-            if maxima and not self._confirmar_maxima(len(fotos)):
-                return
-            self.iniciar(fotos, maxima=maxima)
+            self.iniciar(fotos)
 
     def elegir_carpeta(self):
         if self.procesando:
@@ -607,10 +584,7 @@ class App:
             items = [q for q in sorted(Path(d).iterdir())
                      if q.suffix.lower() in EXT or q.suffix.lower() == ".pdf"]
             fotos = self._expandir_pdfs(items)
-            maxima = self.var_max_lote.get()
-            if maxima and fotos and not self._confirmar_maxima(len(fotos)):
-                return
-            self.iniciar(fotos, maxima=maxima)
+            self.iniciar(fotos)
 
     def abrir_salida(self):
         try:
@@ -919,6 +893,9 @@ class App:
     # ---------- procesar ----------
     def iniciar(self, fotos, maxima=False):
         self.modo_maximo = maxima
+        # La auto-mejora de las dudosas solo aplica en modo normal (en "Foto
+        # dificil" el lote YA va con el motor de maxima calidad).
+        self.auto_mejora = self.var_auto_mejora.get() and not maxima
         fotos = [f for f in fotos if f.suffix.lower() in EXT and f.exists()]
         if not fotos:
             messagebox.showwarning("Sin fotos",
@@ -1000,9 +977,6 @@ class App:
         # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
         self.btn_aprobacion.config(
             state="normal" if (activo and self.resultados_listos) else "disabled")
-        # "Mejorar las marcadas" solo si el ultimo lote dejo fotos dudosas.
-        self.btn_mejorar.config(
-            state="normal" if (activo and self.dudosas) else "disabled")
 
     def worker(self, fotos):
         try:
@@ -1046,7 +1020,8 @@ class App:
             ok = 0
             usados = {}  # codigo -> archivo, para detectar duplicados
             resumen = {"sin_cara": [], "sin_match": [], "ambiguo": [],
-                       "duplicado": [], "pixelado": [], "dudoso": [], "dudoso_rutas": []}
+                       "duplicado": [], "pixelado": [], "dudoso": [],
+                       "dudoso_rutas": [], "mejoradas": []}
             for i, ruta in enumerate(fotos, 1):
                 if self.cancelado:
                     break
@@ -1069,16 +1044,41 @@ class App:
                             resumen["sin_match"].append(ruta.name)
                             revisar = True
                     sin_fondo = None
+                    usar_session, usar_fino = session, fino
                     if detectar_dudosos:
                         sin_fondo, dudoso = core.evaluar_recorte(
                             ruta, session, self.session_clasica)
-                        if dudoso:
+                        # Solo se auto-mejora si BiRefNet YA esta bajado (no
+                        # dispara una descarga de ~900 MB sorpresa a mitad de lote).
+                        auto_ok = (self.auto_mejora and
+                                   (self.session_max is not None
+                                    or core.modelo_maximo_descargado()))
+                        if dudoso and auto_ok:
+                            # AUTO-MEJORA: rehacer SOLA esta foto dudosa con
+                            # BiRefNet (mejor matte) dentro del mismo lote.
+                            try:
+                                if self.session_max is None:
+                                    self.cola.put(("estado",
+                                        "Cargando el motor de calidad alta (una vez)..."))
+                                    self.session_max = core.sesion_maxima()
+                                    LOG.info("modelo maximo (birefnet) listo (auto)")
+                                self.cola.put(("estado",
+                                    f"Mejorando una foto dificil ({ruta.name})..."))
+                                usar_session, usar_fino = self.session_max, True
+                                sin_fondo = None  # birefnet calcula su propia mascara
+                                resumen["mejoradas"].append(ruta.name)
+                            except Exception:
+                                resumen["dudoso"].append(ruta.name)
+                                revisar = True
+                        elif dudoso:
+                            # auto apagada o BiRefNet no bajado -> marcar para
+                            # "Foto dificil" manual.
                             resumen["dudoso"].append(ruta.name)
                             resumen["dudoso_rutas"].append(str(ruta))
                             revisar = True
                     destino, hubo_cara, pixelado = core.procesar_una(
-                        ruta, self.preset, session, nombre_salida, fino=fino,
-                        sin_fondo=sin_fondo)
+                        ruta, self.preset, usar_session, nombre_salida,
+                        fino=usar_fino, sin_fondo=sin_fondo)
                     if not hubo_cara:
                         resumen["sin_cara"].append(ruta.name)
                         revisar = True
@@ -1125,10 +1125,8 @@ class App:
                     cli = self.var_cliente.get()
                     core.registrar_lote("" if cli == SIN_CLIENTE else cli,
                                         ok, renombradas, core.SALIDA)
-                    LOG.info(f"lote listo: {ok}/{total} ok | renombradas {renombradas}")
-                    # Guardar los originales dudosos para el boton "Mejorar las
-                    # marcadas" (terminar() lo habilita si self.dudosas tiene algo).
-                    self.dudosas = [Path(r) for r in resumen.get("dudoso_rutas", [])]
+                    LOG.info(f"lote listo: {ok}/{total} ok | renombradas {renombradas} "
+                             f"| mejoradas auto {len(resumen.get('mejoradas', []))}")
                     self.mostrar_resumen(ok, total, resumen)
                     self.terminar()
                     self.abrir_salida()
@@ -1288,7 +1286,13 @@ class App:
             partes.append("\n\n(!) Se uso el recorte CLASICO de pelo: no se pudo "
                           "descargar la mejora (revisa el internet y vuelve a "
                           "procesar para intentarlo de nuevo).")
-        n_rev = sum(len(v) for v in resumen.values())
+        # Solo cuentan como "a revisar" las categorias de problema (NO las
+        # auto-mejoradas, que son buenas, ni dudoso_rutas, que duplica a dudoso).
+        n_rev = sum(len(resumen[k]) for k in ("sin_cara", "sin_match", "ambiguo",
+                                              "duplicado", "pixelado", "dudoso"))
+        if resumen.get("mejoradas"):
+            partes.append(f"\nSe mejoraron {len(resumen['mejoradas'])} foto(s) dificil(es) "
+                          "solas, con el motor de calidad alta.")
         if self.codigos:
             renombradas = ok - len(resumen["sin_match"]) - len(resumen["ambiguo"]) - len(resumen["duplicado"])
             partes.append(f"Renombradas con su codigo: {renombradas}.")
@@ -1317,8 +1321,8 @@ class App:
                               + ", ".join(resumen["pixelado"][:8])
                               + (" ..." if len(resumen["pixelado"]) > 8 else ""))
             if resumen.get("dudoso"):
-                partes.append(f"\n- Recorte dudoso (ropa clara o pelo dificil): dale al "
-                              f"boton 'Mejorar las marcadas' ({len(resumen['dudoso'])}): "
+                partes.append(f"\n- Recorte dudoso (ropa clara o pelo dificil): selecciona "
+                              f"esas en 'Foto dificil' para rehacerlas mejor ({len(resumen['dudoso'])}): "
                               + ", ".join(resumen["dudoso"][:8])
                               + (" ..." if len(resumen["dudoso"]) > 8 else ""))
         messagebox.showinfo("Resumen", "".join(partes))
