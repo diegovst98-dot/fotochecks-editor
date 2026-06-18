@@ -30,7 +30,8 @@ from motor_ia import (MODELO_FINO, MODELO_MAXIMO, new_session,
                       modelo_fino_descargado, modelo_maximo_descargado,
                       descargar_modelo_fino, sesion_recorte, sesion_maxima)
 from excel_codigos import (_normalizar, _tokens, _es_codigo,
-                           cargar_codigos, emparejar)
+                           cargar_codigos, emparejar, emparejar_detalle,
+                           dni_sospechosos)
 from encuadre import (ruta_cascade, detectar_cara, recortar_region,
                       recortar_alpha, top_cabeza, ancho_persona,
                       fila_hombros, caja_encuadre)
@@ -38,7 +39,8 @@ from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
                      _subir_negros, _limpiar_mascara, _alfa_fino, _alfa_minimo,
                      _descontaminar, _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
-                     hoja_aprobacion, recorte_dudoso)
+                     aplicar_resoluciones, reporte_csv, hoja_aprobacion,
+                     recorte_dudoso)
 
 # Carpeta de salida ACTIVA. La interfaz la reasigna (core.SALIDA = ...) cuando
 # el usuario elige "Guardar en..."; por eso vive aqui y las funciones la leen

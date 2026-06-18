@@ -25,19 +25,33 @@ def _nitidez(img):
     return float(cv2.Laplacian(g, cv2.CV_64F).var())
 
 
+def _es_problema_calidad(p):
+    # Problemas de CALIDAD de imagen que el operador puede "perdonar" (la foto va
+    # igual): borrosa, baja resolucion o cara no detectada. NO incluye "dañado"
+    # (ese archivo no se puede abrir/procesar).
+    return "borrosa" in p or "resolucion" in p or "no se distingue" in p
+
+
 def revisar_fotos(fotos, codigos=None, progreso=None):
     # Devuelve un resumen del estado del pedido SIN procesar nada.
+    # Ademas de los problemas de calidad, clasifica el cruce con el Excel:
+    # los casos 'sugerencia' (un parecido, confirmar) y 'ambiguo' (varios, elegir)
+    # se juntan en rev["por_confirmar"] con sus candidatos, para resolverlos a mano
+    # en la UI ANTES de armar el mensaje al cliente (asi un typo no se pide de mas).
     rev = {"total": len(fotos), "fotos": [], "sin_foto": [], "duplicados": [],
-           "con_excel": bool(codigos)}
+           "por_confirmar": [], "con_excel": bool(codigos),
+           "dni_alertas": excel_codigos.dni_sospechosos(codigos) if codigos else []}
     usados = {}   # codigo -> primer archivo que lo uso
     emparejados = set()
     for i, ruta in enumerate(fotos, 1):
         problemas = []
+        estado = None
+        candidatos = []
         try:
             img = Image.open(ruta)
             img.load()
         except Exception:
-            rev["fotos"].append({"nombre": ruta.name,
+            rev["fotos"].append({"nombre": ruta.name, "estado": "error", "candidatos": [],
                                  "problemas": ["el archivo esta dañado o no es una foto"]})
             if progreso:
                 progreso(i)
@@ -49,7 +63,8 @@ def revisar_fotos(fotos, codigos=None, progreso=None):
         if encuadre.detectar_cara(img.convert("RGB")) is None:
             problemas.append("no se distingue una cara (¿foto de otra cosa?)")
         if codigos:
-            codigo, estado = excel_codigos.emparejar(ruta.stem, codigos)
+            d = excel_codigos.emparejar_detalle(ruta.stem, codigos)
+            estado, candidatos, codigo = d["estado"], d["candidatos"], d["codigo"]
             if estado in ("exacto", "aproximado", "ya_codigo") and codigo:
                 if codigo in usados:
                     rev["duplicados"].append(
@@ -57,20 +72,98 @@ def revisar_fotos(fotos, codigos=None, progreso=None):
                 else:
                     usados[codigo] = ruta.name
                     emparejados.add(codigo)
+            elif estado == "sugerencia" and candidatos:
+                problemas.append(f"¿es {candidatos[0]['nombre']}? (confirmar)")
+                rev["por_confirmar"].append(
+                    {"nombre": ruta.name, "estado": estado, "candidatos": candidatos})
             elif estado == "ambiguo":
                 problemas.append("el nombre coincide con VARIAS personas del Excel")
+                rev["por_confirmar"].append(
+                    {"nombre": ruta.name, "estado": estado, "candidatos": candidatos})
             else:
                 problemas.append("no encontramos este nombre en el Excel")
-        rev["fotos"].append({"nombre": ruta.name, "problemas": problemas})
+        rev["fotos"].append({"nombre": ruta.name, "estado": estado,
+                             "candidatos": candidatos, "problemas": problemas})
         if progreso:
             progreso(i)
     if codigos:
         for r in codigos:
             if r["codigo"] not in emparejados:
                 rev["sin_foto"].append(f'{r["codigo"]} - {r["nombre"]}')
+    rev["por_calidad"] = [
+        {"nombre": f["nombre"],
+         "problemas": [p for p in f["problemas"] if _es_problema_calidad(p)]}
+        for f in rev["fotos"]
+        if any(_es_problema_calidad(p) for p in f["problemas"])]
     rev["con_problema"] = [f for f in rev["fotos"] if f["problemas"]]
     rev["ok"] = rev["total"] - len(rev["con_problema"])
     return rev
+
+
+def aplicar_resoluciones(rev, resoluciones, calidad_ok=None):
+    # Aplica las decisiones del operador (dialogo de la UI) sobre un 'rev' ya
+    # calculado:
+    #   resoluciones = {nombre_archivo: codigo}  -> homonimo/typo elegido a mano
+    #   calidad_ok   = {nombre_archivo, ...}      -> "esta foto va igual" (perdona
+    #                                                el aviso de borrosa/resolucion)
+    # Los casos resueltos salen de los problemas (y de 'sin_foto') para que el
+    # mensaje al cliente quede limpio.
+    resoluciones = resoluciones or {}
+    calidad_ok = set(calidad_ok or [])
+    if not resoluciones and not calidad_ok:
+        return rev
+    resueltos_cod = set()
+    for f in rev["fotos"]:
+        cod = resoluciones.get(f["nombre"])
+        if cod:
+            f["problemas"] = [p for p in f["problemas"]
+                              if not (p.startswith("¿es ")
+                                      or "VARIAS personas" in p
+                                      or "no encontramos" in p)]
+            f["estado"] = "resuelto"
+            f["codigo_resuelto"] = str(cod)
+            resueltos_cod.add(str(cod))
+        if f["nombre"] in calidad_ok:
+            f["problemas"] = [p for p in f["problemas"] if not _es_problema_calidad(p)]
+    rev["sin_foto"] = [s for s in rev["sin_foto"]
+                       if s.split(" - ", 1)[0].strip() not in resueltos_cod]
+    rev["por_confirmar"] = [c for c in rev["por_confirmar"]
+                            if not resoluciones.get(c["nombre"])]
+    rev["por_calidad"] = [c for c in rev.get("por_calidad", [])
+                          if c["nombre"] not in calidad_ok]
+    rev["con_problema"] = [f for f in rev["fotos"] if f["problemas"]]
+    rev["ok"] = rev["total"] - len(rev["con_problema"])
+    return rev
+
+
+def reporte_csv(rev, destino):
+    # Escribe un CSV con el detalle de la revision: una fila por foto + las
+    # personas sin foto + los DNI a revisar. Sirve de respaldo/auditoria del
+    # pedido (se abre en Excel). Usa solo stdlib (csv), va dentro del .exe.
+    import csv
+    destino = Path(destino)
+    with open(destino, "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["REVISION DE PEDIDO"])
+        w.writerow(["Total fotos", rev.get("total", 0),
+                    "Conformes", rev.get("ok", 0)])
+        w.writerow([])
+        w.writerow(["Archivo", "Estado", "Problemas", "Codigo asignado"])
+        for f in rev.get("fotos", []):
+            w.writerow([f.get("nombre", ""), f.get("estado") or "",
+                        " / ".join(f.get("problemas", [])),
+                        f.get("codigo_resuelto", "")])
+        if rev.get("sin_foto"):
+            w.writerow([])
+            w.writerow(["PERSONAS SIN FOTO (estan en la lista del cliente)"])
+            for s in rev["sin_foto"]:
+                w.writerow([s])
+        if rev.get("dni_alertas"):
+            w.writerow([])
+            w.writerow(["DNI A REVISAR", "Nombre", "Motivo"])
+            for cod, nom, mot in rev["dni_alertas"]:
+                w.writerow([cod, nom, mot])
+    return destino
 
 
 def mensaje_para_cliente(rev):

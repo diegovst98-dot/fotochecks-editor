@@ -101,6 +101,9 @@ class App:
         self.ruta_excel = None
         self.resultados_listos = []  # archivos del ultimo lote (para copiarlos)
         self.rev_fotos = []          # fotos elegidas en la pestaña Revisar pedido
+        self.resoluciones = {}       # nombre_archivo -> codigo elegido a mano (Fase 2)
+        self.calidad_ok = set()      # fotos que el operador perdona por calidad
+        self.rev_resultado = None    # ultimo resultado de revisar_pedido (para el reporte)
         self.clientes = self._cargar_clientes()
         self.var_excel = tk.StringVar(
             value="Opcional: las fotos salen con su nombre original.")
@@ -683,6 +686,13 @@ class App:
                                     font=("Segoe UI", 11), relief="flat",
                                     cursor="hand2", padx=12, pady=8, state="disabled")
         self.btn_copiar.pack(side="left", padx=(10, 0))
+        self.btn_reporte = tk.Button(fila3, text="  Descargar reporte  ",
+                                     command=self.descargar_reporte,
+                                     bg="#5a5a5a", fg=COLOR_TEXTO,
+                                     activebackground="#6e6e6e",
+                                     font=("Segoe UI", 10), relief="flat",
+                                     cursor="hand2", padx=12, pady=8, state="disabled")
+        self.btn_reporte.pack(side="left", padx=(8, 0))
 
         marco = tk.Frame(t, bg="#2b2b2b", highlightthickness=1,
                          highlightbackground="#4a4a4a")
@@ -839,6 +849,140 @@ class App:
         self.root.clipboard_clear()
         self.root.clipboard_append(texto)
         self.estado.set("Mensaje copiado. Pegalo en el chat del cliente con Ctrl+V.")
+
+    def descargar_reporte(self):
+        # Guarda un CSV con el detalle de la ultima revision (respaldo/auditoria).
+        if not self.rev_resultado:
+            return
+        ruta = filedialog.asksaveasfilename(
+            title="Guardar reporte de revision", defaultextension=".csv",
+            initialfile="reporte_revision.csv",
+            filetypes=[("CSV (Excel)", "*.csv")])
+        if not ruta:
+            return
+        try:
+            core.reporte_csv(self.rev_resultado, ruta)
+        except Exception as e:
+            messagebox.showerror("No se pudo guardar el reporte", str(e))
+            return
+        self.estado.set("Reporte guardado: " + ruta)
+        try:
+            os.startfile(ruta)
+        except Exception:
+            pass
+
+    def _resolver_confirmaciones(self, rev):
+        # Dialogo modal (Fase 2): para cada caso "por confirmar" (un parecido o
+        # varios candidatos), el operador elige la persona correcta o "Ninguno".
+        # Llena self.resoluciones y aplica las decisiones sobre 'rev', para que el
+        # mensaje al cliente no pida fotos que en realidad ya tenemos (typos).
+        casos = rev.get("por_confirmar", [])
+        calidad = rev.get("por_calidad", [])
+        if not casos and not calidad:
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Revisar antes de armar el mensaje")
+        win.configure(bg=COLOR_FONDO)
+        win.transient(self.root)
+        win.grab_set()
+        tk.Label(win, text="Resuelve esto antes de mandarle el mensaje al cliente:",
+                 bg=COLOR_FONDO, fg=COLOR_TEXTO, font=("Segoe UI", 11, "bold"),
+                 wraplength=560, justify="left").pack(anchor="w", padx=16, pady=(14, 8))
+
+        cont = tk.Frame(win, bg=COLOR_FONDO)
+        cont.pack(fill="both", expand=True, padx=8)
+        canvas = tk.Canvas(cont, bg=COLOR_FONDO, highlightthickness=0, height=380, width=600)
+        sb = ttk.Scrollbar(cont, orient="vertical", command=canvas.yview)
+        marco = tk.Frame(canvas, bg=COLOR_FONDO)
+        marco.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=marco, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        elecciones = {}  # nombre_archivo -> StringVar(codigo o "")
+        if casos:
+            tk.Label(marco, text="NOMBRES POR CONFIRMAR", bg=COLOR_FONDO,
+                     fg=COLOR_LIMA, font=("Segoe UI", 9, "bold")).pack(
+                         anchor="w", padx=6, pady=(4, 0))
+        for caso in casos:
+            nom = caso["nombre"]
+            etiqueta = ("¿Es esta persona?" if caso.get("estado") == "sugerencia"
+                        else "¿Cuál de estas es?")
+            blq = tk.Frame(marco, bg="#2b2b2b", highlightthickness=1,
+                           highlightbackground="#4a4a4a")
+            blq.pack(fill="x", expand=True, padx=6, pady=5)
+            tk.Label(blq, text=nom, bg="#2b2b2b", fg=COLOR_LIMA,
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8, pady=(6, 0))
+            tk.Label(blq, text=etiqueta, bg="#2b2b2b", fg="#CFCFCF",
+                     font=("Segoe UI", 9)).pack(anchor="w", padx=8)
+            var = tk.StringVar(value="")
+            for r in caso.get("candidatos", []):
+                det = r.get("detalle") or ""
+                txt = f'{r["nombre"]}  ·  DNI {r["codigo"]}' + (f'  ·  {det}' if det else "")
+                tk.Radiobutton(blq, text=txt, variable=var, value=r["codigo"],
+                               bg="#2b2b2b", fg=COLOR_TEXTO, selectcolor="#1d1d1d",
+                               activebackground="#2b2b2b", activeforeground=COLOR_TEXTO,
+                               font=("Segoe UI", 10), anchor="w").pack(anchor="w", padx=16)
+            tk.Radiobutton(blq, text="Ninguno (lo dejo sin asignar)", variable=var,
+                           value="", bg="#2b2b2b", fg="#CFCFCF", selectcolor="#1d1d1d",
+                           activebackground="#2b2b2b", activeforeground=COLOR_TEXTO,
+                           font=("Segoe UI", 9), anchor="w").pack(anchor="w", padx=16, pady=(0, 6))
+            elecciones[nom] = var
+
+        forgive = {}  # nombre_archivo -> BooleanVar (True = la foto va igual)
+        if calidad:
+            tk.Label(marco, text="FOTOS MARCADAS POR CALIDAD", bg=COLOR_FONDO,
+                     fg=COLOR_LIMA, font=("Segoe UI", 9, "bold")).pack(
+                         anchor="w", padx=6, pady=(10, 0))
+            for c in calidad:
+                nom = c["nombre"]
+                blq = tk.Frame(marco, bg="#2b2b2b", highlightthickness=1,
+                               highlightbackground="#4a4a4a")
+                blq.pack(fill="x", expand=True, padx=6, pady=4)
+                tk.Label(blq, text=f'{nom}  ({", ".join(c["problemas"])})',
+                         bg="#2b2b2b", fg="#CFCFCF", font=("Segoe UI", 9),
+                         wraplength=540, justify="left").pack(anchor="w", padx=8, pady=(6, 0))
+                bv = tk.BooleanVar(value=False)
+                tk.Checkbutton(blq, text="Esta foto va igual (no pedirla de nuevo)",
+                               variable=bv, bg="#2b2b2b", fg=COLOR_TEXTO,
+                               selectcolor="#1d1d1d", activebackground="#2b2b2b",
+                               activeforeground=COLOR_TEXTO, font=("Segoe UI", 9)).pack(
+                                   anchor="w", padx=12, pady=(0, 6))
+                forgive[nom] = bv
+
+        def aplicar():
+            self.resoluciones = {n: v.get() for n, v in elecciones.items() if v.get()}
+            self.calidad_ok = {n for n, v in forgive.items() if v.get()}
+            win.destroy()
+
+        barra = tk.Frame(win, bg=COLOR_FONDO)
+        barra.pack(fill="x", padx=16, pady=12)
+        tk.Button(barra, text="  Aplicar  ", command=aplicar, bg=COLOR_LIMA,
+                  fg="#1d1d1d", activebackground="#eefb7a", font=("Segoe UI", 11, "bold"),
+                  relief="flat", cursor="hand2", padx=14, pady=6).pack(side="right")
+        tk.Button(barra, text="  Omitir  ", command=win.destroy, bg="#5a5a5a",
+                  fg=COLOR_TEXTO, activebackground="#6e6e6e", font=("Segoe UI", 10),
+                  relief="flat", cursor="hand2", padx=12, pady=6).pack(side="right", padx=(0, 8))
+
+        win.update_idletasks()
+        win.geometry(f"+{self.root.winfo_rootx() + 60}+{self.root.winfo_rooty() + 60}")
+        self.root.wait_window(win)
+        if self.resoluciones or self.calidad_ok:
+            core.aplicar_resoluciones(rev, self.resoluciones, self.calidad_ok)
+
+    def _avisar_dnis(self, alertas):
+        # Aviso INTERNO (no va al cliente): DNIs del Excel que se ven raros
+        # (ceros perdidos, letras, longitudes fuera de lo normal).
+        if not alertas:
+            return
+        top = alertas[:20]
+        lineas = [f"- {nom}: {cod}  ->  {mot}" for cod, nom, mot in top]
+        extra = f"\n...y {len(alertas) - len(top)} mas." if len(alertas) > len(top) else ""
+        messagebox.showwarning(
+            "Revisa estos DNIs del Excel",
+            "Estos documentos se ven raros. Revisa el Excel antes de imprimir "
+            "(el editor NO los corrige solo):\n\n" + "\n".join(lineas) + extra)
 
     # ---------- hoja de aprobacion ----------
     def generar_aprobacion(self):
@@ -1029,8 +1173,14 @@ class App:
                     nombre_salida = None
                     revisar = False
                     if self.codigos:
-                        codigo, estado = core.emparejar(ruta.stem, self.codigos)
-                        if estado in ("exacto", "aproximado", "ya_codigo") and codigo:
+                        # Si el operador YA eligio a mano esta foto en "Revisar
+                        # pedido" (homonimo/typo dudoso), se respeta esa decision.
+                        resuelto = self.resoluciones.get(ruta.name)
+                        if resuelto:
+                            codigo, estado = resuelto, "resuelto"
+                        else:
+                            codigo, estado = core.emparejar(ruta.stem, self.codigos)
+                        if estado in ("exacto", "aproximado", "ya_codigo", "resuelto") and codigo:
                             if codigo in usados:
                                 resumen["duplicado"].append(ruta.name)
                                 revisar = True  # mismo codigo dos veces: dejar original
@@ -1135,6 +1285,13 @@ class App:
                     self.barra.config(value=msg[1])
                 elif tag == "rev_fin":
                     rev, rutas = msg[1], msg[2]
+                    self.resoluciones = {}
+                    self.calidad_ok = set()
+                    if rev.get("por_confirmar") or rev.get("por_calidad"):
+                        self._resolver_confirmaciones(rev)
+                    if rev.get("dni_alertas"):
+                        self._avisar_dnis(rev["dni_alertas"])
+                    self.rev_resultado = rev  # para el boton "Descargar reporte"
                     problemas = {f["nombre"] for f in rev["con_problema"]}
                     for r in rutas:
                         self.agregar_miniatura(r, Path(r).name in problemas)
@@ -1142,6 +1299,7 @@ class App:
                     self.txt_revision.delete("1.0", "end")
                     self.txt_revision.insert("1.0", texto)
                     self.btn_copiar.config(state="normal")
+                    self.btn_reporte.config(state="normal")
                     LOG.info(f"revision: {rev['ok']}/{rev['total']} conformes | "
                              f"{len(rev['con_problema'])} con problema | "
                              f"{len(rev['sin_foto'])} sin foto")
