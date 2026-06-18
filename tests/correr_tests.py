@@ -390,6 +390,8 @@ def main():
               hasattr(a, "_resolver_confirmaciones") and hasattr(a, "resoluciones"))
         check("panel de resumen disponible (N4)",
               hasattr(a, "_mostrar_resumen_revision") and hasattr(a, "var_resumen"))
+        check("boton procesar revisadas (C1)",
+              hasattr(a, "btn_procesar_rev") and hasattr(a, "procesar_revisadas"))
         a._activar_botones(False)
         a._activar_botones(True)
         check("bloqueo de botones funciona", True)
