@@ -73,6 +73,13 @@ def main():
                            capture_output=True)
         check(f"compila {p.name}", r.returncode == 0,
               r.stderr.decode(errors="ignore")[:200])
+
+    # test rapido de _alfa_apretado (sin modelo): contrato del borde firme
+    r = subprocess.run([sys.executable, str(AQUI / "test_alfa.py")],
+                       capture_output=True)
+    check("test_alfa (borde apretado)", r.returncode == 0,
+          r.stdout.decode(errors="ignore")[-200:])
+
     if fallas:  # sin compilacion no tiene sentido seguir
         return
 
