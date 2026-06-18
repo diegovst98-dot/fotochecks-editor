@@ -39,8 +39,8 @@ from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
                      _subir_negros, _limpiar_mascara, _alfa_fino, _alfa_minimo,
                      _descontaminar, _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
-                     aplicar_resoluciones, reporte_csv, hoja_aprobacion,
-                     recorte_dudoso)
+                     aplicar_resoluciones, reporte_csv, plan_cardpresso,
+                     aplicar_cardpresso, hoja_aprobacion, recorte_dudoso)
 
 # Carpeta de salida ACTIVA. La interfaz la reasigna (core.SALIDA = ...) cuando
 # el usuario elige "Guardar en..."; por eso vive aqui y las funciones la leen

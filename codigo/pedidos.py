@@ -191,6 +191,111 @@ def reporte_csv(rev, destino):
     return destino
 
 
+# ---------- Renombrar para CardPresso (solo renombrar, sin editar la imagen) ----------
+# Toma fotos ya listas + el Excel del cliente y saca COPIAS nombradas <DNI>.<ext>
+# para que CardPresso las enlace. Reusa el mismo matching tolerante del editor.
+
+_ESTADOS_OK = ("exacto", "aproximado", "ya_codigo", "resuelto")
+
+
+def _ext_cardpresso(ext):
+    e = ext.lower()
+    if e in (".jpeg", ".jpg"):
+        return ".jpg"
+    if e == ".png":
+        return ".png"
+    return e
+
+
+def plan_cardpresso(fotos, codigos, resoluciones=None):
+    # Arma el plan de renombrado SIN tocar archivos (matching solo por nombre).
+    # Devuelve {plan, por_confirmar, duplicados}. 'resoluciones' = {nombre: codigo}
+    # con lo elegido a mano (homonimos/typos dudosos).
+    resoluciones = resoluciones or {}
+    plan = []
+    por_confirmar = []
+    usados = {}
+    for ruta in fotos:
+        nombre = ruta.name
+        elegido = resoluciones.get(nombre)
+        if elegido:
+            codigo, estado, cands = str(elegido), "resuelto", []
+        else:
+            d = excel_codigos.emparejar_detalle(ruta.stem, codigos)
+            codigo, estado, cands = d["codigo"], d["estado"], d["candidatos"]
+            if estado in ("sugerencia", "ambiguo"):
+                por_confirmar.append({"nombre": nombre, "estado": estado, "candidatos": cands})
+        plan.append({"nombre": nombre, "ruta": str(ruta), "codigo": codigo,
+                     "estado": estado, "candidatos": cands})
+        if codigo and estado in _ESTADOS_OK:
+            usados.setdefault(str(codigo), []).append(nombre)
+    duplicados = {k: v for k, v in usados.items() if len(v) > 1}
+    return {"plan": plan, "por_confirmar": por_confirmar, "duplicados": duplicados}
+
+
+def aplicar_cardpresso(plan, salida, formato_unico=False, progreso=None):
+    # Copia las fotos que cruzaron a 'salida' como <DNI>.<ext> (originales intactas)
+    # y escribe _verificacion.csv. formato_unico=True las convierte todas a .jpg.
+    # Devuelve {copiadas, sin_match, duplicadas, carpeta}.
+    import csv
+    import shutil
+    salida = Path(salida)
+    salida.mkdir(parents=True, exist_ok=True)
+    filas = []
+    sin_match = []
+    errores = []
+    vistos = {}
+    duplicadas = []
+    copiadas = 0
+    for i, p in enumerate(plan, 1):
+        cod = str(p["codigo"]) if p["codigo"] else ""
+        if not cod or p["estado"] not in _ESTADOS_OK:
+            sin_match.append(p["nombre"])
+        elif cod in vistos:
+            duplicadas.append(f'{p["nombre"]} (DNI {cod} ya usado por {vistos[cod]})')
+        else:
+            try:
+                ext = ".jpg" if formato_unico else _ext_cardpresso(Path(p["ruta"]).suffix)
+                destino = salida / f"{cod}{ext}"
+                if formato_unico:
+                    im = Image.open(p["ruta"])
+                    if ImageOps is not None:
+                        im = ImageOps.exif_transpose(im)
+                    im.convert("RGB").save(destino, "JPEG", quality=95)
+                else:
+                    shutil.copy2(p["ruta"], destino)
+                vistos[cod] = p["nombre"]
+                filas.append([cod, p["nombre"], destino.name, p["estado"]])
+                copiadas += 1
+            except Exception:
+                # una foto dañada NO tumba el lote: se marca y se sigue.
+                errores.append(p["nombre"])
+        if progreso:
+            progreso(i)
+    with open(salida / "_verificacion.csv", "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["DNI", "Archivo_original", "Archivo_nuevo", "Metodo"])
+        for f in filas:
+            w.writerow(f)
+        if sin_match:
+            w.writerow([])
+            w.writerow(["SIN CRUZAR con el Excel (revisar a mano)"])
+            for n in sin_match:
+                w.writerow([n])
+        if duplicadas:
+            w.writerow([])
+            w.writerow(["DNI REPETIDO (no copiadas)"])
+            for n in duplicadas:
+                w.writerow([n])
+        if errores:
+            w.writerow([])
+            w.writerow(["NO SE PUDIERON ABRIR (dañadas)"])
+            for n in errores:
+                w.writerow([n])
+    return {"copiadas": copiadas, "sin_match": sin_match, "duplicadas": duplicadas,
+            "errores": errores, "carpeta": str(salida)}
+
+
 def mensaje_para_cliente(rev, cliente=""):
     # Texto listo para copiar y mandar por WhatsApp al cliente. Si se pasa
     # 'cliente', el saludo lo nombra ("Hola, equipo de X 👋").

@@ -108,6 +108,7 @@ class App:
         self.resoluciones = {}       # nombre_archivo -> codigo elegido a mano (Fase 2)
         self.calidad_ok = set()      # fotos que el operador perdona por calidad
         self.rev_resultado = None    # ultimo resultado de revisar_pedido (para el reporte)
+        self.cp_fotos = []           # fotos elegidas en la pestaña "Renombrar (CardPresso)"
         self.clientes = self._cargar_clientes()
         self.var_excel = tk.StringVar(
             value="Opcional: las fotos salen con su nombre original.")
@@ -146,9 +147,11 @@ class App:
         self.nb.pack(fill="x", padx=20, pady=(4, 0))
         self.tab_fotos = tk.Frame(self.nb, bg=COLOR_FONDO)
         self.tab_revision = tk.Frame(self.nb, bg=COLOR_FONDO)
+        self.tab_cardpresso = tk.Frame(self.nb, bg=COLOR_FONDO)
         self.tab_firmas = tk.Frame(self.nb, bg=COLOR_FONDO)
         self.nb.add(self.tab_fotos, text="Procesar fotos")
         self.nb.add(self.tab_revision, text="Revisar pedido")
+        self.nb.add(self.tab_cardpresso, text="Renombrar (CardPresso)")
         self.nb.add(self.tab_firmas, text="Firmas")
 
         # --- Cliente (configuracion guardada por cliente recurrente) ---
@@ -348,8 +351,9 @@ class App:
         tk.Label(excel_row, textvariable=self.var_excel, bg=COLOR_FONDO,
                  fg="#CFCFCF", font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
 
-        # --- Contenido de la pestaña "Revisar pedido" y "Firmas" ---
+        # --- Contenido de las pestañas "Revisar pedido", "Renombrar" y "Firmas" ---
         self._armar_tab_revision()
+        self._armar_tab_cardpresso()
         self._armar_tab_firmas()
 
         self.estado = tk.StringVar(value="Elige las fotos para empezar.")
@@ -722,6 +726,131 @@ class App:
         tk.Label(t, text="Produce las fotos ya revisadas, con tus correcciones, sin "
                  "volver a elegirlas.", bg=COLOR_FONDO, fg="#7a7a7a",
                  font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 12))
+
+    def _armar_tab_cardpresso(self):
+        t = self.tab_cardpresso
+        tk.Label(t, text="Para fotos que YA estan listas y solo necesitas nombrarlas con "
+                 "el DNI para CardPresso (sin editar la imagen).",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(12, 0))
+        tk.Label(t, text="Cruza cada foto con el Excel y saca COPIAS <DNI>.<ext> + un CSV de "
+                 "verificacion. Los originales no se tocan.",
+                 bg=COLOR_FONDO, fg="#CFCFCF", font=("Segoe UI", 10)).pack(anchor="w", padx=20)
+
+        fila1 = tk.Frame(t, bg=COLOR_FONDO); fila1.pack(fill="x", padx=20, pady=(10, 4))
+        tk.Label(fila1, text="1.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_cp_fotos = tk.Button(fila1, text="  Elegir fotos del cliente  ",
+                                      command=self.elegir_fotos_cardpresso, bg=COLOR_LILA,
+                                      fg="#1d1d1d", activebackground="#b3a6fa",
+                                      font=("Segoe UI", 11, "bold"), relief="flat",
+                                      cursor="hand2", padx=12, pady=8)
+        self.btn_cp_fotos.pack(side="left")
+        self.btn_cp_carpeta = tk.Button(fila1, text="  o una carpeta  ",
+                                        command=self.elegir_carpeta_cardpresso, bg="#5a5a5a",
+                                        fg=COLOR_TEXTO, activebackground="#6e6e6e",
+                                        font=("Segoe UI", 10), relief="flat", cursor="hand2",
+                                        padx=10, pady=8)
+        self.btn_cp_carpeta.pack(side="left", padx=(8, 0))
+        self.var_cp = tk.StringVar(value="Aun no eliges fotos.")
+        tk.Label(fila1, textvariable=self.var_cp, bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+
+        fila2 = tk.Frame(t, bg=COLOR_FONDO); fila2.pack(fill="x", padx=20, pady=4)
+        tk.Label(fila2, text="2.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_cp_excel = tk.Button(fila2, text="  Elegir Excel (nombre + DNI)  ",
+                                      command=self.elegir_excel, bg="#5a5a5a", fg=COLOR_TEXTO,
+                                      activebackground="#6e6e6e", font=("Segoe UI", 10),
+                                      relief="flat", cursor="hand2", padx=10, pady=8)
+        self.btn_cp_excel.pack(side="left")
+        tk.Label(fila2, textvariable=self.var_excel, bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+
+        self.var_cp_jpg = tk.BooleanVar(value=True)
+        tk.Checkbutton(t, text="Pasar todas a un solo formato .jpg (recomendado para CardPresso)",
+                       variable=self.var_cp_jpg, bg=COLOR_FONDO, fg="#CFCFCF",
+                       selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
+                       activeforeground=COLOR_TEXTO, font=("Segoe UI", 9)).pack(
+                           anchor="w", padx=20, pady=(6, 0))
+
+        fila3 = tk.Frame(t, bg=COLOR_FONDO); fila3.pack(fill="x", padx=20, pady=(6, 4))
+        tk.Label(fila3, text="3.", bg=COLOR_FONDO, fg=COLOR_LIMA,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+        self.btn_cp_run = tk.Button(fila3, text="  RENOMBRAR PARA CARDPRESSO  ",
+                                    command=self.renombrar_cardpresso, bg=COLOR_LIMA,
+                                    fg="#1d1d1d", activebackground="#eefb7a",
+                                    font=("Segoe UI", 12, "bold"), relief="flat",
+                                    cursor="hand2", padx=16, pady=8)
+        self.btn_cp_run.pack(side="left")
+
+        self.var_cp_resultado = tk.StringVar(value="")
+        tk.Label(t, textvariable=self.var_cp_resultado, bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=("Segoe UI", 10, "bold"), justify="left", wraplength=820).pack(
+                     anchor="w", padx=20, pady=(8, 12))
+
+    def elegir_fotos_cardpresso(self):
+        if self.procesando:
+            return
+        rutas = filedialog.askopenfilenames(
+            title="Elegir fotos del cliente",
+            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.heic *.heif"),
+                       ("Todos los archivos", "*.*")])
+        if rutas:
+            self.cp_fotos = [Path(r) for r in rutas]
+            self.var_cp.set(f"{len(self.cp_fotos)} foto(s) elegidas.")
+
+    def elegir_carpeta_cardpresso(self):
+        if self.procesando:
+            return
+        d = filedialog.askdirectory(title="Elegir carpeta con fotos")
+        if d:
+            self.cp_fotos = [q for q in sorted(Path(d).iterdir())
+                             if q.suffix.lower() in EXT or q.suffix.lower() in (".heic", ".heif")]
+            self.var_cp.set(f"{len(self.cp_fotos)} foto(s) en la carpeta.")
+
+    def renombrar_cardpresso(self):
+        # Renombra (copiando) las fotos al DNI cruzando con el Excel, para CardPresso.
+        # Reusa el matching tolerante + el dialogo de confirmar/elegir; no edita imagen.
+        if self.procesando:
+            return
+        fotos = [f for f in self.cp_fotos if f.exists()]
+        if not fotos:
+            messagebox.showwarning("Sin fotos",
+                                   "Primero elige las fotos del cliente (paso 1).")
+            return
+        if not self.codigos:
+            messagebox.showwarning("Falta el Excel",
+                                   "Elige el Excel con nombre y DNI (paso 2).")
+            return
+        plan = core.plan_cardpresso(fotos, self.codigos)
+        self.resoluciones = {}
+        self.calidad_ok = set()
+        if plan["por_confirmar"]:
+            rev_min = {"total": len(fotos), "fotos": [], "sin_foto": [], "por_calidad": [],
+                       "con_problema": [], "ok": 0, "por_confirmar": plan["por_confirmar"]}
+            rpn = {p["nombre"]: p["ruta"] for p in plan["plan"]}
+            self._resolver_confirmaciones(rev_min, rpn)
+        salida = filedialog.askdirectory(
+            title="¿Donde guardo las copias renombradas?")
+        if not salida:
+            return
+        plan = core.plan_cardpresso(fotos, self.codigos, self.resoluciones)
+        self.procesando = True
+        self._activar_botones(False)
+        self.barra.config(maximum=len(plan["plan"]), value=0)
+        self.estado.set(f"Renombrando {len(plan['plan'])} fotos para CardPresso...")
+        threading.Thread(target=self.worker_cardpresso,
+                         args=(plan, salida, self.var_cp_jpg.get()), daemon=True).start()
+        self.root.after(100, self.revisar_cola)
+
+    def worker_cardpresso(self, plan, salida, formato_unico):
+        try:
+            res = core.aplicar_cardpresso(
+                plan["plan"], salida, formato_unico,
+                progreso=lambda i: self.cola.put(("rev_prog", i)))
+            self.cola.put(("cp_fin", res))
+        except Exception:
+            self.cola.put(("fatal", traceback.format_exc()))
 
     def _armar_tab_firmas(self):
         t = self.tab_firmas
@@ -1192,7 +1321,8 @@ class App:
         for b in (self.btn_fotos, self.btn_carpeta, self.btn_firma,
                   self.btn_dificil, self.btn_excel, self.btn_destino,
                   self.btn_rev_fotos, self.btn_rev_carpeta, self.btn_rev_excel,
-                  self.btn_revisar, self.btn_guardar_cliente, self.btn_procesar_rev):
+                  self.btn_revisar, self.btn_guardar_cliente, self.btn_procesar_rev,
+                  self.btn_cp_fotos, self.btn_cp_carpeta, self.btn_cp_excel, self.btn_cp_run):
             b.config(state=estado)
         self.combo_cliente.config(state="readonly" if activo else "disabled")
         # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
@@ -1395,6 +1525,25 @@ class App:
                             f"{len(rev['sin_foto'])} persona(s) sin foto. "
                             "Mensaje listo para copiar.")
                     self.terminar()
+                    return
+                elif tag == "cp_fin":
+                    res = msg[1]
+                    txt = f"Listas {res['copiadas']} foto(s) en:\n{res['carpeta']}"
+                    if res["sin_match"]:
+                        txt += f"\n⚠ Sin cruzar (revisar): {len(res['sin_match'])}"
+                    if res["duplicadas"]:
+                        txt += f"\n⚠ DNI repetido (no copiadas): {len(res['duplicadas'])}"
+                    if res.get("errores"):
+                        txt += f"\n⚠ No se pudieron abrir: {len(res['errores'])}"
+                    self.var_cp_resultado.set(txt)
+                    self.estado.set("Renombrado para CardPresso listo: " + res["carpeta"])
+                    LOG.info(f"cardpresso: {res['copiadas']} copiadas | "
+                             f"sin_match {len(res['sin_match'])} | dup {len(res['duplicadas'])}")
+                    self.terminar()
+                    try:
+                        os.startfile(res["carpeta"])
+                    except Exception:
+                        pass
                     return
                 elif tag == "pdf_listo":
                     LOG.info("hoja de aprobacion generada: " + msg[1])
