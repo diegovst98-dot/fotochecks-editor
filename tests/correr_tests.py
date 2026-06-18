@@ -252,6 +252,21 @@ def main():
         check("P5 reporte_csv genera archivo",
               rep.exists() and rep.stat().st_size > 0, str(rep))
 
+        # N5: el saludo del mensaje nombra al cliente
+        rev_n = {"total": 1, "fotos": [], "sin_foto": ["1009 - Falta Uno"],
+                 "duplicados": [], "por_confirmar": [], "por_calidad": [],
+                 "con_problema": [], "ok": 0, "con_excel": True}
+        check("N5 saludo nombra al cliente",
+              "ACME SAC" in core.mensaje_para_cliente(rev_n, "ACME SAC"), "")
+        # N3: el aviso HEIC entra en la seccion REENVIAR del mensaje
+        rev_h = {"total": 1, "sin_foto": [], "duplicados": [], "por_confirmar": [],
+                 "por_calidad": [], "ok": 0, "con_excel": True,
+                 "fotos": [{"nombre": "f.heic", "estado": "error", "candidatos": [],
+                            "problemas": ["es foto de iPhone (HEIC); pidela exportada como JPG"]}]}
+        rev_h["con_problema"] = [f for f in rev_h["fotos"] if f["problemas"]]
+        msj_h = core.mensaje_para_cliente(rev_h)
+        check("N3 HEIC va en REENVIAR", "REENVIAR" in msj_h and "HEIC" in msj_h, msj_h)
+
     # ---------- 4. registro de lotes y hoja de aprobacion ----------
     print("\n[4/6] Lotes y hoja de aprobacion")
     base_real = core.BASE
@@ -373,6 +388,8 @@ def main():
         check("boton Foto dificil existe", hasattr(a, "btn_dificil"))
         check("resolver confirmaciones disponible (Fase 2)",
               hasattr(a, "_resolver_confirmaciones") and hasattr(a, "resoluciones"))
+        check("panel de resumen disponible (N4)",
+              hasattr(a, "_mostrar_resumen_revision") and hasattr(a, "var_resumen"))
         a._activar_botones(False)
         a._activar_botones(True)
         check("bloqueo de botones funciona", True)
