@@ -156,6 +156,36 @@ def main():
     c, e = core.emparejar("Pedro Inexistente", codigos)
     check("sin match detectado", not c or e not in ("exacto", "aproximado"), f"{c}/{e}")
 
+    # typos de una persona unica -> auto (aproximado); ver docs/2026-06-17-matching-*
+    wb2 = Workbook(); ws2 = wb2.active
+    ws2.append(["Codigo", "Nombre"])
+    for fila in (("2001", "Cielo Arroyo"), ("2002", "Cristhian Camargo"),
+                 ("2003", "Mary Carmen Condori"), ("2004", "Ana Flores Vega"),
+                 ("2005", "Ana Torres Vega")):
+        ws2.append(fila)
+    xls2 = TMP / "personal2.xlsx"; wb2.save(xls2)
+    cods2 = core.cargar_codigos(xls2)
+    c, e = core.emparejar("Cielo Aroyo", cods2)
+    check("typo auto: Aroyo->Arroyo", c == "2001" and e == "aproximado", f"{c}/{e}")
+    c, e = core.emparejar("Cristian Camargo", cods2)
+    check("typo auto: Cristian->Cristhian", c == "2002" and e == "aproximado", f"{c}/{e}")
+    c, e = core.emparejar("Mary CarmenCondori", cods2)
+    check("typo auto: CarmenCondori->Carmen Condori", c == "2003" and e == "aproximado", f"{c}/{e}")
+    c, e = core.emparejar("Ana Vega", cods2)
+    check("seguridad: parcial compartido NO se auto-empareja", e == "ambiguo", f"{c}/{e}")
+
+    # P2/P3: lectura multi-columna (codigo=DNI, detalle p/ homonimos) + alerta DNI
+    wb3 = Workbook(); ws3 = wb3.active
+    ws3.append(["EMPRESA", "TRABAJADOR", "CARGO", "DNI"])
+    ws3.append(["ACME", "Ricardo Flores", "Supervisor", "73217258"])
+    ws3.append(["ACME", "Ricardo Flores", "CEO", "15726725"])
+    xls3 = TMP / "personal3.xlsx"; wb3.save(xls3)
+    cods3 = core.cargar_codigos(xls3)
+    check("P2 multi-col: codigo=DNI y trae detalle",
+          len(cods3) == 2 and all(r.get("detalle") for r in cods3), str(cods3))
+    check("P3 alerta DNI: detecta 7 digitos",
+          bool(core.dni_sospechosos([{"codigo": "7877823", "nombre": "X"}])), "")
+
     # ---------- 3. revision de pedido + mensaje ----------
     print("\n[3/6] Revision de pedido")
     entrada = sorted(p for p in (BASE / "entrada").iterdir()
@@ -193,6 +223,35 @@ def main():
             check("mensaje: caso todo conforme",
                   "conforme" in core.mensaje_para_cliente(rev_ok), "")
 
+        # por_confirmar + aplicar_resoluciones (Fase 2): un nombre ambiguo
+        # (2 Marias) queda para elegir a mano; resolverlo limpia el mensaje.
+        amb = pedido / "Maria Lopez.jpg"
+        shutil.copy2(entrada[0], amb)
+        rev2 = core.revisar_fotos([amb], codigos)
+        check("por_confirmar: detecta el ambiguo",
+              any(c["nombre"] == "Maria Lopez.jpg" and len(c["candidatos"]) == 2
+                  for c in rev2["por_confirmar"]), str(rev2["por_confirmar"]))
+        core.aplicar_resoluciones(rev2, {"Maria Lopez.jpg": "1002"})
+        check("aplicar_resoluciones: limpia por_confirmar",
+              not rev2["por_confirmar"], str(rev2["por_confirmar"]))
+        check("aplicar_resoluciones: saca a la persona de sin_foto",
+              not any(s.startswith("1002") for s in rev2["sin_foto"]), str(rev2["sin_foto"]))
+
+        # P4: override de calidad ("esta foto va igual") limpia el aviso de calidad
+        rev_q = {"total": 1, "fotos": [{"nombre": "x.jpg", "estado": None,
+                 "candidatos": [], "problemas": ["se ve borrosa"]}],
+                 "sin_foto": [], "por_confirmar": [],
+                 "por_calidad": [{"nombre": "x.jpg", "problemas": ["se ve borrosa"]}],
+                 "con_problema": [], "ok": 0}
+        core.aplicar_resoluciones(rev_q, {}, {"x.jpg"})
+        check("P4 calidad_ok: limpia el problema de calidad",
+              not rev_q["con_problema"] and not rev_q["por_calidad"], str(rev_q))
+        # P5: reporte CSV se genera
+        rep = TMP / "reporte.csv"
+        core.reporte_csv(rev2, rep)
+        check("P5 reporte_csv genera archivo",
+              rep.exists() and rep.stat().st_size > 0, str(rep))
+
     # ---------- 4. registro de lotes y hoja de aprobacion ----------
     print("\n[4/6] Lotes y hoja de aprobacion")
     base_real = core.BASE
@@ -217,6 +276,18 @@ def main():
                                    {"1001": "Juan Perez"})
         check("hoja de aprobacion: PDF generado", pdf.exists() and pdf.stat().st_size > 10000,
               f"{pdf.stat().st_size if pdf.exists() else 0} bytes")
+
+    # recorte dudoso: dos mascaras casi iguales = NO dudoso; muy distintas = SI
+    base = np.zeros((400, 400), np.uint8)
+    base[100:300, 100:300] = 255
+    casi = base.copy()
+    casi[100:300, 100:205] = 255  # diferencia minima (<1.2%)
+    check("recorte dudoso: mascaras iguales no se marcan",
+          core.recorte_dudoso(base, casi) is False, "")
+    muy = np.zeros((400, 400), np.uint8)
+    muy[100:300, 180:380] = 255  # silueta corrida: gran desacuerdo
+    check("recorte dudoso: mascaras muy distintas se marcan",
+          core.recorte_dudoso(base, muy) is True, "")
 
     # ---------- 5. DORADOS: el pipeline completo contra salidas aprobadas ----------
     print("\n[5/6] Salidas doradas (esto carga el modelo, ~20s)")
@@ -300,6 +371,8 @@ def main():
         tabs = [a.nb.tab(i, "text") for i in a.nb.tabs()]
         check("ventana arma con 3 pestañas", len(tabs) == 3, str(tabs))
         check("boton Foto dificil existe", hasattr(a, "btn_dificil"))
+        check("resolver confirmaciones disponible (Fase 2)",
+              hasattr(a, "_resolver_confirmaciones") and hasattr(a, "resoluciones"))
         a._activar_botones(False)
         a._activar_botones(True)
         check("bloqueo de botones funciona", True)
