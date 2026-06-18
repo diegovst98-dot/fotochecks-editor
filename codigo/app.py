@@ -713,6 +713,16 @@ class App:
         self.txt_revision.insert("1.0", "Aqui aparecera el mensaje para el cliente. "
                                         "Puedes editarlo antes de copiarlo.")
 
+        self.btn_procesar_rev = tk.Button(
+            t, text="  ▶  Procesar estas mismas fotos  ",
+            command=self.procesar_revisadas, bg=COLOR_LILA, fg="#1d1d1d",
+            activebackground="#b3a6fa", font=("Segoe UI", 11, "bold"),
+            relief="flat", cursor="hand2", padx=14, pady=9)
+        self.btn_procesar_rev.pack(anchor="w", padx=20, pady=(2, 2))
+        tk.Label(t, text="Produce las fotos ya revisadas, con tus correcciones, sin "
+                 "volver a elegirlas.", bg=COLOR_FONDO, fg="#7a7a7a",
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 12))
+
     def _armar_tab_firmas(self):
         t = self.tab_firmas
         tk.Label(t, text="Convierte firmas escaneadas o fotografiadas en tinta de un "
@@ -879,6 +889,21 @@ class App:
             os.startfile(ruta)
         except Exception:
             pass
+
+    def procesar_revisadas(self):
+        # C1: produce las MISMAS fotos que se revisaron, respetando lo que el
+        # operador eligio a mano en el dialogo (self.resoluciones), sin volver a
+        # elegir archivos. Reusa el flujo de "Procesar fotos" (iniciar) y salta a
+        # esa pestaña para ver el avance.
+        if self.procesando:
+            return
+        if not self.rev_fotos:
+            messagebox.showwarning(
+                "Sin fotos",
+                "Primero elige y revisa las fotos del cliente (pasos 1 a 3).")
+            return
+        self.nb.select(0)  # pestaña "Procesar fotos" (donde se ve el progreso)
+        self.iniciar(list(self.rev_fotos))
 
     def _mostrar_resumen_revision(self, rev):
         # Panel-resumen con conteo claro tras revisar el pedido (refleja ya lo
@@ -1167,7 +1192,7 @@ class App:
         for b in (self.btn_fotos, self.btn_carpeta, self.btn_firma,
                   self.btn_dificil, self.btn_excel, self.btn_destino,
                   self.btn_rev_fotos, self.btn_rev_carpeta, self.btn_rev_excel,
-                  self.btn_revisar, self.btn_guardar_cliente):
+                  self.btn_revisar, self.btn_guardar_cliente, self.btn_procesar_rev):
             b.config(state=estado)
         self.combo_cliente.config(state="readonly" if activo else "disabled")
         # La hoja de aprobacion solo tiene sentido con un lote ya procesado.
