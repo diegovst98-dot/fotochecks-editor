@@ -13,6 +13,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from PIL import Image, ImageTk
+try:
+    from PIL import ImageOps as _ImageOps   # endereza miniaturas (EXIF); opcional
+except Exception:
+    _ImageOps = None
 
 import editar_fotos as core
 
@@ -694,6 +698,11 @@ class App:
                                      cursor="hand2", padx=12, pady=8, state="disabled")
         self.btn_reporte.pack(side="left", padx=(8, 0))
 
+        self.var_resumen = tk.StringVar(value="")
+        tk.Label(t, textvariable=self.var_resumen, bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=("Segoe UI", 10, "bold"), justify="left").pack(
+                     anchor="w", padx=20, pady=(8, 0))
+
         marco = tk.Frame(t, bg="#2b2b2b", highlightthickness=1,
                          highlightbackground="#4a4a4a")
         marco.pack(fill="x", padx=20, pady=(6, 12))
@@ -871,11 +880,30 @@ class App:
         except Exception:
             pass
 
-    def _resolver_confirmaciones(self, rev):
+    def _mostrar_resumen_revision(self, rev):
+        # Panel-resumen con conteo claro tras revisar el pedido (refleja ya lo
+        # resuelto a mano en el dialogo).
+        reenviar = sum(1 for f in rev.get("con_problema", [])
+                       if any("borrosa" in p or "resolucion" in p or "dañado" in p
+                              or "HEIC" in p for p in f["problemas"]))
+        partes = [f"✓ {rev.get('ok', 0)} listas"]
+        if reenviar:
+            partes.append(f"⚠ {reenviar} a reenviar")
+        if rev.get("sin_foto"):
+            partes.append(f"✗ {len(rev['sin_foto'])} sin foto")
+        if rev.get("por_confirmar"):
+            partes.append(f"? {len(rev['por_confirmar'])} por confirmar")
+        if rev.get("dni_alertas"):
+            partes.append(f"DNI: {len(rev['dni_alertas'])} a revisar")
+        self.var_resumen.set("    ·    ".join(partes))
+
+    def _resolver_confirmaciones(self, rev, rutas_por_nombre=None):
         # Dialogo modal (Fase 2): para cada caso "por confirmar" (un parecido o
-        # varios candidatos), el operador elige la persona correcta o "Ninguno".
-        # Llena self.resoluciones y aplica las decisiones sobre 'rev', para que el
-        # mensaje al cliente no pida fotos que en realidad ya tenemos (typos).
+        # varios candidatos) el operador elige la persona correcta o "Ninguno";
+        # ademas perdona fotos marcadas por calidad. Muestra la MINIATURA de cada
+        # foto para decidir mirando la cara, no solo el nombre del archivo.
+        # Llena self.resoluciones/calidad_ok y aplica las decisiones sobre 'rev'.
+        rutas_por_nombre = rutas_por_nombre or {}
         casos = rev.get("por_confirmar", [])
         calidad = rev.get("por_calidad", [])
         if not casos and not calidad:
@@ -900,6 +928,24 @@ class App:
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
+        self._dlg_thumbs = []  # mantiene vivas las PhotoImage del dialogo
+
+        def _miniatura(parent, nombre):
+            ruta = rutas_por_nombre.get(nombre)
+            if not ruta:
+                return
+            try:
+                im = Image.open(ruta)
+                if _ImageOps is not None:
+                    im = _ImageOps.exif_transpose(im)
+                im = im.convert("RGB")
+                im.thumbnail((84, 104))
+                ph = ImageTk.PhotoImage(im)
+                self._dlg_thumbs.append(ph)
+                tk.Label(parent, image=ph, bg="#2b2b2b").pack(side="left", padx=8, pady=8)
+            except Exception:
+                pass
+
         elecciones = {}  # nombre_archivo -> StringVar(codigo o "")
         if casos:
             tk.Label(marco, text="NOMBRES POR CONFIRMAR", bg=COLOR_FONDO,
@@ -912,19 +958,22 @@ class App:
             blq = tk.Frame(marco, bg="#2b2b2b", highlightthickness=1,
                            highlightbackground="#4a4a4a")
             blq.pack(fill="x", expand=True, padx=6, pady=5)
-            tk.Label(blq, text=nom, bg="#2b2b2b", fg=COLOR_LIMA,
+            _miniatura(blq, nom)
+            cb = tk.Frame(blq, bg="#2b2b2b")
+            cb.pack(side="left", fill="x", expand=True)
+            tk.Label(cb, text=nom, bg="#2b2b2b", fg=COLOR_LIMA,
                      font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8, pady=(6, 0))
-            tk.Label(blq, text=etiqueta, bg="#2b2b2b", fg="#CFCFCF",
+            tk.Label(cb, text=etiqueta, bg="#2b2b2b", fg="#CFCFCF",
                      font=("Segoe UI", 9)).pack(anchor="w", padx=8)
             var = tk.StringVar(value="")
             for r in caso.get("candidatos", []):
                 det = r.get("detalle") or ""
                 txt = f'{r["nombre"]}  ·  DNI {r["codigo"]}' + (f'  ·  {det}' if det else "")
-                tk.Radiobutton(blq, text=txt, variable=var, value=r["codigo"],
+                tk.Radiobutton(cb, text=txt, variable=var, value=r["codigo"],
                                bg="#2b2b2b", fg=COLOR_TEXTO, selectcolor="#1d1d1d",
                                activebackground="#2b2b2b", activeforeground=COLOR_TEXTO,
                                font=("Segoe UI", 10), anchor="w").pack(anchor="w", padx=16)
-            tk.Radiobutton(blq, text="Ninguno (lo dejo sin asignar)", variable=var,
+            tk.Radiobutton(cb, text="Ninguno (lo dejo sin asignar)", variable=var,
                            value="", bg="#2b2b2b", fg="#CFCFCF", selectcolor="#1d1d1d",
                            activebackground="#2b2b2b", activeforeground=COLOR_TEXTO,
                            font=("Segoe UI", 9), anchor="w").pack(anchor="w", padx=16, pady=(0, 6))
@@ -940,11 +989,14 @@ class App:
                 blq = tk.Frame(marco, bg="#2b2b2b", highlightthickness=1,
                                highlightbackground="#4a4a4a")
                 blq.pack(fill="x", expand=True, padx=6, pady=4)
-                tk.Label(blq, text=f'{nom}  ({", ".join(c["problemas"])})',
+                _miniatura(blq, nom)
+                cb = tk.Frame(blq, bg="#2b2b2b")
+                cb.pack(side="left", fill="x", expand=True)
+                tk.Label(cb, text=f'{nom}  ({", ".join(c["problemas"])})',
                          bg="#2b2b2b", fg="#CFCFCF", font=("Segoe UI", 9),
-                         wraplength=540, justify="left").pack(anchor="w", padx=8, pady=(6, 0))
+                         wraplength=500, justify="left").pack(anchor="w", padx=8, pady=(6, 0))
                 bv = tk.BooleanVar(value=False)
-                tk.Checkbutton(blq, text="Esta foto va igual (no pedirla de nuevo)",
+                tk.Checkbutton(cb, text="Esta foto va igual (no pedirla de nuevo)",
                                variable=bv, bg="#2b2b2b", fg=COLOR_TEXTO,
                                selectcolor="#1d1d1d", activebackground="#2b2b2b",
                                activeforeground=COLOR_TEXTO, font=("Segoe UI", 9)).pack(
@@ -1287,19 +1339,23 @@ class App:
                     rev, rutas = msg[1], msg[2]
                     self.resoluciones = {}
                     self.calidad_ok = set()
+                    rutas_por_nombre = {Path(r).name: r for r in rutas}
                     if rev.get("por_confirmar") or rev.get("por_calidad"):
-                        self._resolver_confirmaciones(rev)
+                        self._resolver_confirmaciones(rev, rutas_por_nombre)
                     if rev.get("dni_alertas"):
                         self._avisar_dnis(rev["dni_alertas"])
                     self.rev_resultado = rev  # para el boton "Descargar reporte"
                     problemas = {f["nombre"] for f in rev["con_problema"]}
                     for r in rutas:
                         self.agregar_miniatura(r, Path(r).name in problemas)
-                    texto = core.mensaje_para_cliente(rev)
+                    cli = self.var_cliente.get()
+                    texto = core.mensaje_para_cliente(
+                        rev, "" if cli == SIN_CLIENTE else cli)
                     self.txt_revision.delete("1.0", "end")
                     self.txt_revision.insert("1.0", texto)
                     self.btn_copiar.config(state="normal")
                     self.btn_reporte.config(state="normal")
+                    self._mostrar_resumen_revision(rev)
                     LOG.info(f"revision: {rev['ok']}/{rev['total']} conformes | "
                              f"{len(rev['con_problema'])} con problema | "
                              f"{len(rev['sin_foto'])} sin foto")

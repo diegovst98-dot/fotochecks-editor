@@ -6,9 +6,24 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+try:
+    from PIL import ImageOps          # para corregir la rotacion EXIF (fotos de celular)
+except Exception:
+    ImageOps = None
 
 import encuadre
 import excel_codigos
+
+# HEIC (fotos de iPhone): si pillow-heif esta disponible (exe nuevo) se registra
+# para que Image.open abra .heic/.heif. Import DINAMICO a proposito: en un exe
+# viejo que no lo trae NO rompe (cae a un aviso claro) y el candado no lo exige.
+try:
+    import importlib
+    _ph = importlib.import_module("pillow_heif")
+    _ph.register_heif_opener()
+    _HEIC_OK = True
+except Exception:
+    _HEIC_OK = False
 
 
 # ---------- revision previa del pedido (semaforo de insumos) ----------
@@ -50,9 +65,19 @@ def revisar_fotos(fotos, codigos=None, progreso=None):
         try:
             img = Image.open(ruta)
             img.load()
+            if ImageOps is not None:  # endereza fotos de celular (orientacion EXIF)
+                try:
+                    img = ImageOps.exif_transpose(img)
+                except Exception:
+                    pass
         except Exception:
-            rev["fotos"].append({"nombre": ruta.name, "estado": "error", "candidatos": [],
-                                 "problemas": ["el archivo esta dañado o no es una foto"]})
+            ext = ruta.suffix.lower()
+            if ext in (".heic", ".heif") and not _HEIC_OK:
+                prob = "es foto de iPhone (HEIC); pidela exportada como JPG"
+            else:
+                prob = "el archivo esta dañado o no es una foto"
+            rev["fotos"].append({"nombre": ruta.name, "estado": "error",
+                                 "candidatos": [], "problemas": [prob]})
             if progreso:
                 progreso(i)
             continue
@@ -166,8 +191,10 @@ def reporte_csv(rev, destino):
     return destino
 
 
-def mensaje_para_cliente(rev):
-    # Texto listo para copiar y mandar por WhatsApp al cliente.
+def mensaje_para_cliente(rev, cliente=""):
+    # Texto listo para copiar y mandar por WhatsApp al cliente. Si se pasa
+    # 'cliente', el saludo lo nombra ("Hola, equipo de X 👋").
+    saludo = f"Hola, equipo de {cliente.strip()} 👋" if cliente.strip() else "Hola 👋"
     lineas = []
     if rev["sin_foto"]:
         lineas.append("*FALTAN LAS FOTOS de estas personas (estan en tu lista):*")
@@ -175,7 +202,7 @@ def mensaje_para_cliente(rev):
         lineas.append("")
     borrosas = [f for f in rev["con_problema"]
                 if any("borrosa" in p or "resolucion" in p or "dañado" in p
-                       for p in f["problemas"])]
+                       or "HEIC" in p for p in f["problemas"])]
     if borrosas:
         lineas.append("*REENVIAR estas fotos por favor (salieron con problemas):*")
         lineas += [f'  - {f["nombre"]}: {", ".join(f["problemas"])}' for f in borrosas]
@@ -192,9 +219,9 @@ def mensaje_para_cliente(rev):
         lineas.append("")
     if not lineas:
         extra = " y la lista de personal" if rev["con_excel"] else ""
-        return (f"¡Todo conforme! ✅ Revisamos las {rev['total']} fotos{extra} "
+        return (f"{saludo} ¡Todo conforme! ✅ Revisamos las {rev['total']} fotos{extra} "
                 "y esta completo. Ya pasamos tu pedido a produccion.")
-    cabecera = ("Hola 👋 Ya revisamos lo que nos enviaste para tus fotochecks. "
+    cabecera = (f"{saludo} Ya revisamos lo que nos enviaste para tus fotochecks. "
                 "Para avanzar sin demoras necesitamos lo siguiente:\n")
     pie = (f"\nEl resto esta conforme ✅ ({rev['ok']} de {rev['total']} fotos listas). "
            "Apenas nos completes esto, tu pedido entra a produccion.")
