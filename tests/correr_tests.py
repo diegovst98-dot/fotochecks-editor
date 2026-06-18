@@ -267,6 +267,30 @@ def main():
         msj_h = core.mensaje_para_cliente(rev_h)
         check("N3 HEIC va en REENVIAR", "REENVIAR" in msj_h and "HEIC" in msj_h, msj_h)
 
+        # NUEVA PESTAÑA: plan_cardpresso + aplicar_cardpresso (renombrar a <DNI>)
+        from pathlib import Path as _P
+        cp_fotos = [_P(entrada[0]), _P(entrada[1])]   # fotos reales
+        cp_dir = pedido / "_cp_in"; cp_dir.mkdir(exist_ok=True)
+        f_juan = cp_dir / "Juan Perez Gomez.jpg"; shutil.copy2(entrada[0], f_juan)
+        f_amb = cp_dir / "Maria Lopez.jpg"; shutil.copy2(entrada[1], f_amb)
+        pl = core.plan_cardpresso([f_juan, f_amb], codigos)
+        check("cardpresso: cruza exacto (Juan->1001)",
+              any(p["nombre"] == "Juan Perez Gomez.jpg" and p["codigo"] == "1001"
+                  for p in pl["plan"]), str(pl["plan"]))
+        check("cardpresso: ambiguo va a por_confirmar",
+              any(c["nombre"] == "Maria Lopez.jpg" for c in pl["por_confirmar"]),
+              str(pl["por_confirmar"]))
+        # resolver el ambiguo a mano y aplicar
+        pl2 = core.plan_cardpresso([f_juan, f_amb], codigos, {"Maria Lopez.jpg": "1002"})
+        cp_out = TMP / "cp_out"
+        res = core.aplicar_cardpresso(pl2["plan"], cp_out, formato_unico=False)
+        check("cardpresso: copia las 2 renombradas", res["copiadas"] == 2, str(res))
+        check("cardpresso: archivo <DNI>.jpg existe",
+              (cp_out / "1001.jpg").exists() and (cp_out / "1002.jpg").exists(),
+              str(sorted(p.name for p in cp_out.iterdir())))
+        check("cardpresso: genera _verificacion.csv",
+              (cp_out / "_verificacion.csv").exists(), "")
+
     # ---------- 4. registro de lotes y hoja de aprobacion ----------
     print("\n[4/6] Lotes y hoja de aprobacion")
     base_real = core.BASE
@@ -384,7 +408,10 @@ def main():
         a = app.App(root)
         root.update()
         tabs = [a.nb.tab(i, "text") for i in a.nb.tabs()]
-        check("ventana arma con 3 pestañas", len(tabs) == 3, str(tabs))
+        check("ventana arma con 4 pestañas", len(tabs) == 4, str(tabs))
+        check("pestaña Renombrar/CardPresso (nueva)",
+              any("CardPresso" in x for x in tabs)
+              and hasattr(a, "renombrar_cardpresso"), str(tabs))
         check("boton Foto dificil existe", hasattr(a, "btn_dificil"))
         check("resolver confirmaciones disponible (Fase 2)",
               hasattr(a, "_resolver_confirmaciones") and hasattr(a, "resoluciones"))
