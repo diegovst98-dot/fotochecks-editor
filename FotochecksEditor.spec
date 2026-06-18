@@ -26,6 +26,11 @@ tmp_ret = collect_all('pypdfium2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pypdfium2_raw')   # binario nativo pdfium (la .dll)
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pillow_heif')     # abrir fotos de iPhone (.heic/.heif)
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# El nativo libheif va en _pillow_heif.*.pyd (raiz de site-packages, self-contained):
+# hay que pedirlo explicito porque no esta DENTRO del paquete pillow_heif.
+hiddenimports += ['_pillow_heif']
 
 
 a = Analysis(
