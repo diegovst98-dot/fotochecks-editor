@@ -144,6 +144,22 @@ def _alfa_minimo(alpha, sigma=1.6):
     return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
 
 
+def _alfa_apretado(alpha, lo=100.0, hi=170.0, sigma=0.6):
+    # Borde FIRME sin cirugia (2026-06-18, feedback Mirza: el calado en color salia
+    # difuminado). Aprieta el contraste del canal alfa (smoothstep lo->hi: la
+    # neblina semitransparente se va a 0 o 255) y deja un antialias minimo (~1px).
+    # NO usa morfologia (apertura/erosion) -> a diferencia de _alfa_fino, no denta
+    # ni se come el pelo. Reemplaza a _alfa_minimo para el modelo fino: da el borde
+    # firme que se ve preciso sobre fondos de color y limpio sobre blanco.
+    # Validado sobre las 10 fotos doradas + 2 originales reales (ver docs/
+    # 2026-06-18-calado-preciso-apretado-design.md).
+    a = np.asarray(alpha).astype(np.float32)
+    x = np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+    s = (x * x * (3.0 - 2.0 * x)) * 255.0
+    s = cv2.GaussianBlur(s, (0, 0), sigma)
+    return Image.fromarray(np.clip(s, 0, 255).astype(np.uint8))
+
+
 def _recortar_cerco(img, alpha, cara=None):
     # El modelo a veces deja una FRANJA ANCHA del fondo original pegada al
     # contorno con alfa solido (tipico con paredes grises/beige y pelo difuso):

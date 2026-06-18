@@ -37,7 +37,7 @@ from encuadre import (ruta_cascade, detectar_cara, recortar_region,
                       fila_hombros, caja_encuadre)
 from retoque import (_factor_brillo_auto, _corregir_color, _corregir_saturacion,
                      _subir_negros, _limpiar_mascara, _alfa_fino, _alfa_minimo,
-                     _descontaminar, _recortar_cerco)
+                     _alfa_apretado, _descontaminar, _recortar_cerco)
 from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
                      aplicar_resoluciones, reporte_csv, plan_cardpresso,
                      aplicar_cardpresso, hoja_aprobacion, recorte_dudoso)
@@ -66,10 +66,13 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
     fmt = preset["formato_salida"].upper()
     transparente = bool(preset.get("fondo_transparente")) and fmt == "PNG"
     if fino:
-        # Modelo fino (isnet/birefnet): POST-PROCESO MINIMO (solo suavizado del
-        # borde). El matte del modelo ya es bueno; la cirugia pesada (apertura +
-        # erosion de cerco) era la que mordia/dentaba el pelo (2026-06-16).
-        alpha = _alfa_minimo(sin_fondo.split()[-1])
+        # Modelo fino (isnet/birefnet): borde FIRME con _alfa_apretado (contraste
+        # del alfa, SIN morfologia). El minimo (_alfa_minimo) dejaba un borde suave
+        # que sobre color se veia como neblina ("difuminado", feedback Mirza
+        # 2026-06-18); apretado lo elimina sin dentar ni comer pelo, y en blanco
+        # queda limpio (validado en las 10 doradas). No re-agregar la cirugia
+        # pesada (_alfa_fino/_recortar_cerco): esa era la que oscilaba v10->v27.
+        alpha = _alfa_apretado(sin_fondo.split()[-1])
     else:
         # Modelo clasico (u2net): deja un cerco semitransparente (el fondo
         # original asomandose por el pelo fino) que sobre blanco se ve como un
