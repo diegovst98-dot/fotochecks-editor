@@ -420,6 +420,9 @@ def main():
               any("CardPresso" in x for x in tabs)
               and hasattr(a, "renombrar_cardpresso"), str(tabs))
         check("boton Foto dificil existe", hasattr(a, "btn_dificil"))
+        check("dialogo mejorar dificiles (post-lote)",
+              hasattr(a, "_ofrecer_mejora_dificiles")
+              and not hasattr(a, "var_auto_mejora"))
         check("resolver confirmaciones disponible (Fase 2)",
               hasattr(a, "_resolver_confirmaciones") and hasattr(a, "resoluciones"))
         check("panel de resumen disponible (N4)",
