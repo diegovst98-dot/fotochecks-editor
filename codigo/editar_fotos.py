@@ -20,6 +20,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageEnhance
+try:
+    from PIL import ImageOps       # endereza fotos de celular (orientacion EXIF)
+except Exception:                  # bundle viejo sin el modulo: sigue sin enderezar
+    ImageOps = None
 
 import firmas as _firmas
 import pedidos as _pedidos
@@ -48,6 +52,21 @@ from pedidos import (_nitidez, revisar_fotos, mensaje_para_cliente,
 SALIDA = BASE / "salida"
 
 
+def _abrir_enderezada(ruta):
+    # Abre la foto y la endereza segun su orientacion EXIF. Las fotos de
+    # celular vienen "de costado" (el visor las muestra bien gracias al EXIF),
+    # pero el modelo de IA recibe los pixeles crudos y recorta una cara
+    # volteada (feedback disenadora 2026-07-01). Mismo patron que pedidos.py
+    # (v33), que solo cubria miniaturas y Revisar pedido, no este pipeline.
+    im = Image.open(ruta)
+    if ImageOps is not None:
+        try:
+            im = ImageOps.exif_transpose(im)
+        except Exception:
+            pass
+    return im.convert("RGB")
+
+
 def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
                  sin_fondo=None):
     # El pipeline completo de UNA foto: quitar fondo -> limpiar borde ->
@@ -56,7 +75,7 @@ def procesar_una(ruta, preset, session, nombre_salida=None, fino=False,
     # recorte), se reusa y NO se vuelve a correr; si es None, se calcula aqui
     # como siempre (asi las salidas no cambian: el candado de doradas sigue OK).
     from rembg import remove  # carga diferida (ya quedo cargado tras new_session)
-    original = Image.open(ruta).convert("RGB")
+    original = _abrir_enderezada(ruta)
     if sin_fondo is None:
         sin_fondo = remove(original, session=session)  # RGBA con transparencia
 
@@ -167,7 +186,7 @@ def evaluar_recorte(ruta, session_fino, session_clasica):
     # Devuelve (sin_fondo_fino, dudoso): el sin_fondo se reusa en procesar_una
     # para no correr el modelo fino dos veces (solo se suma el clasico, ~1s).
     from rembg import remove
-    original = Image.open(ruta).convert("RGB")
+    original = _abrir_enderezada(ruta)
     sin_fondo = remove(original, session=session_fino)
     dudoso = False
     if session_clasica is not None:

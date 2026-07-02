@@ -7,10 +7,23 @@
 import cv2
 import numpy as np
 from PIL import Image
+try:
+    from PIL import ImageOps       # endereza fotos de celular (orientacion EXIF)
+except Exception:                  # bundle viejo sin el modulo: sigue sin enderezar
+    ImageOps = None
 
 
 def procesar(ruta, carpeta_salida, nombre_salida=None, color="negro"):
-    img = Image.open(ruta).convert("RGB")
+    # Una firma FOTOGRAFIADA con celular puede venir "de costado" por la
+    # orientacion EXIF (mismo bug que las selfies, feedback 2026-07-01): sin
+    # esto el _firma.png final saldria girado 90 grados.
+    img = Image.open(ruta)
+    if ImageOps is not None:
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+    img = img.convert("RGB")
     gris = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2GRAY)
 
     # Aplanar iluminacion: estimar el papel con un cierre morfologico grande y

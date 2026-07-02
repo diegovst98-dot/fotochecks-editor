@@ -429,7 +429,12 @@ def hoja_aprobacion(archivos, destino_pdf, cliente="", nombres=None):
                 px = x + (celda_w - im.width) // 2
                 py = y + 4
                 pag[py:py + arr.shape[0], px:px + arr.shape[1]] = arr
-                cv2.rectangle(pag, (x, y), (x + celda_w, y + celda_h - 30),
+                # El borde abraza la FOTO real, no la celda: con el borde
+                # fijo, una foto menos alta que la celda quedaba con un
+                # relleno blanco abajo DENTRO del marco y parecia que la
+                # foto salio mal (feedback disenadora 2026-07-01).
+                cv2.rectangle(pag, (px - 2, py - 2),
+                              (px + arr.shape[1] + 1, py + arr.shape[0] + 1),
                               BORDE, 1)
             except Exception:
                 _texto(pag, "(error)", x + 8, y + 8, 0.5, 1, ROJO)

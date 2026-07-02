@@ -158,6 +158,19 @@ def caja_encuadre(img_rgb, cara, alpha, preset):
         centro_x = cx
     crop_h = crop_w / ratio
 
+    # La caja no puede pasar el borde INFERIOR de la foto: en fotos que ya
+    # vienen recortadas tipo carnet la persona toca el borde de abajo y no hay
+    # mas cuerpo; lo que faltara se rellenaria de blanco y el torso quedaria
+    # flotando sobre una franja blanca (feedback disenadora 2026-07-01).
+    # Manteniendo el margen superior, el alto maximo usable es
+    # (alto - cabeza) / (1 - margen); si la caja pide mas, se achica con el
+    # mismo aspecto (el ancho solo baja: la persona sigue llenando los lados).
+    disponible = ((img_rgb.height - cabeza)
+                  / max(1e-6, 1.0 - preset["margen_superior"]))
+    if crop_h > disponible:
+        crop_h = disponible
+        crop_w = crop_h * ratio
+
     # Anclar arriba en el tope del pelo + margen blanco (nunca corta el pelo) y
     # centrar en el eje de la persona para que llene parejo a izquierda y derecha.
     top = cabeza - preset["margen_superior"] * crop_h

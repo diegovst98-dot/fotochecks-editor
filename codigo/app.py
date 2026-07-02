@@ -1687,6 +1687,11 @@ class App:
             return
         try:
             img = Image.open(ruta)
+            if _ImageOps is not None:
+                # Fotos DE ENTRADA del cliente (galeria de Revisar pedido)
+                # pueden traer orientacion EXIF; las salidas del editor no
+                # la llevan, asi que para ellas es un no-op (2026-07-01).
+                img = _ImageOps.exif_transpose(img)
             # Si es PNG transparente, mostrarlo sobre BLANCO en la vista previa
             # (asi se ve como saldra en un fotocheck claro, no con el fondo de la
             # celda asomandose, que confunde).
