@@ -80,6 +80,13 @@ def main():
     check("test_alfa (borde apretado)", r.returncode == 0,
           r.stdout.decode(errors="ignore")[-200:])
 
+    # test rapido de encuadre + EXIF (sin modelo): la caja nunca pasa el borde
+    # inferior de la foto y las fotos de celular se enderezan antes de procesar
+    r = subprocess.run([sys.executable, str(AQUI / "test_encuadre.py")],
+                       capture_output=True)
+    check("test_encuadre (caja + EXIF)", r.returncode == 0,
+          r.stdout.decode(errors="ignore")[-300:])
+
     if fallas:  # sin compilacion no tiene sentido seguir
         return
 
@@ -404,6 +411,25 @@ def main():
     if APROBAR:
         print(f"  APROBADAS {n_ok} salidas doradas en tests/doradas/ - "
               "revisalas a ojo antes de confiar en ellas.")
+
+    # EXIF de punta a punta: una "foto de celular" (pixeles de costado +
+    # orientacion 6 en EXIF) debe salir IGUAL que la misma foto derecha.
+    # Sin el enderezado, el modelo recibia la cara volteada (2026-07-01).
+    if entrada:
+        derecha = Image.open(entrada[0]).convert("RGB")
+        ex = Image.Exif()
+        ex[274] = 6   # "girar 90 en sentido horario para ver derecha"
+        p_gir = TMP / "exif_celular.png"
+        derecha.transpose(Image.ROTATE_90).save(p_gir, "PNG", exif=ex)
+        p_der = TMP / "exif_derecha.png"
+        derecha.save(p_der, "PNG")
+        preset["fondo_transparente"] = False
+        d_gir, _, _ = core.procesar_una(p_gir, preset, session, "exif_gir",
+                                        fino=fino)
+        d_der, _, _ = core.procesar_una(p_der, preset, session, "exif_der",
+                                        fino=fino)
+        igual, det = comparar_imagenes(d_gir, d_der)
+        check("EXIF: foto de celular girada sale igual que derecha", igual, det)
 
     # ---------- 6. humo de la interfaz ----------
     print("\n[6/6] Interfaz")
