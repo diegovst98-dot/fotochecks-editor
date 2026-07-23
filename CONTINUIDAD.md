@@ -56,8 +56,13 @@ Si el cambio es intencional y ya se revisaron las nuevas salidas **a ojo**:
 python tests\correr_tests.py --aprobar
 ```
 
-⚠️ **Las doradas no están en GitHub.** Si se pierden, el candado no falla: simplemente
-deja de proteger, en silencio. Se restauran del zip de backup a `tests\doradas\`.
+⚠️ **Las doradas no están en GitHub** (pesan 16 MB y salen de fotos de clientes). Si se
+pierden, el candado **sí avisa**: cada salida sin su dorada falla con "no existe la salida
+aprobada" y la publicación se cancela. El peligro está en cómo uno sale del paso: correr
+`--aprobar` sin doradas las **regenera desde el código de ese momento**, sea bueno o malo,
+y a partir de ahí el candado compara contra eso — se pierde el punto de comparación
+histórico y todo da verde para siempre. Por eso: si faltan, **restaurarlas del zip de
+backup** a `tests\doradas\`, nunca regenerarlas.
 
 ## Deshacer una versión que salió mal
 
