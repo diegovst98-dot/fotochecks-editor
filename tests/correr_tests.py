@@ -87,6 +87,13 @@ def main():
     check("test_encuadre (caja + EXIF)", r.returncode == 0,
           r.stdout.decode(errors="ignore")[-300:])
 
+    # test rapido de la hoja fija de firmas (sin modelo): todas del mismo tamano,
+    # el trazo llena la hoja, no se deforma y el borde no queda blandito
+    r = subprocess.run([sys.executable, str(AQUI / "test_hoja_firma.py")],
+                       capture_output=True)
+    check("test_hoja_firma (todas del mismo tamano)", r.returncode == 0,
+          r.stdout.decode(errors="ignore")[-300:])
+
     if fallas:  # sin compilacion no tiene sentido seguir
         return
 
