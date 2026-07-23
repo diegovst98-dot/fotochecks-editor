@@ -607,6 +607,11 @@ class App:
                        ("Todos los archivos", "*.*")])
         if not rutas:
             return
+        try:
+            hoja = self._hoja_firma()
+        except ValueError as e:
+            messagebox.showwarning("Tamaño de hoja", str(e))
+            return
         firmas = [Path(r) for r in rutas]
         cli = self.var_cliente.get()
         core.SALIDA = self.carpeta_salida or core.carpeta_pedido(
@@ -620,9 +625,25 @@ class App:
         self.barra.config(maximum=len(firmas), value=0)
         self.estado.set("Procesando firmas...")
         threading.Thread(target=self.worker_firmas,
-                         args=(firmas, self.var_firma_color.get()),
+                         args=(firmas, self.var_firma_color.get(), hoja),
                          daemon=True).start()
         self.root.after(100, self.revisar_cola)
+
+    def _hoja_firma(self):
+        # (ancho, alto) en px a 300 DPI, o None si la casilla esta desmarcada.
+        # Si el usuario escribe cualquier cosa en las cajas, se avisa y NO se
+        # procesa a medias: mejor un aviso claro que 200 firmas de tamano raro.
+        if not self.var_firma_hoja.get():
+            return None
+        try:
+            ancho = float(self.var_firma_ancho.get().replace(",", "."))
+            alto = float(self.var_firma_alto.get().replace(",", "."))
+        except ValueError:
+            raise ValueError("La medida de la hoja debe ser un numero en cm "
+                             "(ejemplo: 8.6 y 5.4).")
+        if not (0.5 <= ancho <= 30 and 0.5 <= alto <= 30):
+            raise ValueError("La medida de la hoja debe estar entre 0.5 y 30 cm.")
+        return (round(ancho / 2.54 * 300), round(alto / 2.54 * 300))
 
     # ---------- pestañas nuevas ----------
     def _armar_tab_revision(self):
@@ -865,6 +886,37 @@ class App:
                            value=val, bg=COLOR_FONDO, fg="#CFCFCF",
                            selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
                            activeforeground=COLOR_TEXTO).pack(side="left", padx=(8, 0))
+        # Hoja de tamano fijo: todas las firmas salen del MISMO tamano, con el
+        # trazo agrandado para llenar la hoja (pedido de Mirza 2026-07-23: hoy
+        # las acomoda una por una para que todas queden a la misma medida).
+        self.var_firma_hoja = tk.BooleanVar(value=False)
+        fila_hoja = tk.Frame(t, bg=COLOR_FONDO)
+        fila_hoja.pack(anchor="w", padx=20, pady=(10, 0))
+        tk.Checkbutton(fila_hoja,
+                       text="Todas del mismo tamaño (hoja fija)",
+                       variable=self.var_firma_hoja, bg=COLOR_FONDO, fg="#CFCFCF",
+                       selectcolor="#2b2b2b", activebackground=COLOR_FONDO,
+                       activeforeground=COLOR_TEXTO,
+                       font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.var_firma_ancho = tk.StringVar(value="8.6")
+        self.var_firma_alto = tk.StringVar(value="5.4")
+        tk.Label(fila_hoja, text="  Ancho:", bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 10)).pack(side="left")
+        tk.Entry(fila_hoja, textvariable=self.var_firma_ancho, width=5,
+                 bg="#2b2b2b", fg=COLOR_TEXTO, relief="flat",
+                 insertbackground=COLOR_TEXTO).pack(side="left", padx=(4, 0))
+        tk.Label(fila_hoja, text="cm   Alto:", bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 10)).pack(side="left")
+        tk.Entry(fila_hoja, textvariable=self.var_firma_alto, width=5,
+                 bg="#2b2b2b", fg=COLOR_TEXTO, relief="flat",
+                 insertbackground=COLOR_TEXTO).pack(side="left", padx=(4, 0))
+        tk.Label(fila_hoja, text="cm", bg=COLOR_FONDO, fg="#CFCFCF",
+                 font=("Segoe UI", 10)).pack(side="left")
+        tk.Label(t, text="Sin marcar, cada firma sale recortada a su propio trazo "
+                         "(como hasta ahora). Marcado, todas salen del mismo tamaño "
+                         "a 300 DPI, con la firma agrandada y centrada.",
+                 bg=COLOR_FONDO, fg="#7a7a7a", font=("Segoe UI", 9),
+                 justify="left").pack(anchor="w", padx=20, pady=(4, 0))
         self.btn_firma = tk.Button(t, text="  Elegir firmas...  ",
                                    command=self.elegir_firmas,
                                    bg=COLOR_LILA, fg="#1d1d1d",
@@ -1288,7 +1340,7 @@ class App:
         except Exception:
             self.cola.put(("fatal", traceback.format_exc()))
 
-    def worker_firmas(self, firmas, color="negro"):
+    def worker_firmas(self, firmas, color="negro", hoja=None):
         # Las firmas no usan la IA: salen al toque (umbral por luminosidad).
         try:
             core.SALIDA.mkdir(parents=True, exist_ok=True)
@@ -1298,7 +1350,7 @@ class App:
                 if self.cancelado:
                     break
                 try:
-                    destino = core.procesar_firma(ruta, color=color)
+                    destino = core.procesar_firma(ruta, color=color, hoja=hoja)
                     ok += 1
                     self.cola.put(("una", i, str(destino), False))
                 except Exception as e:

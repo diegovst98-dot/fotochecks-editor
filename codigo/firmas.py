@@ -13,7 +13,51 @@ except Exception:                  # bundle viejo sin el modulo: sigue sin ender
     ImageOps = None
 
 
-def procesar(ruta, carpeta_salida, nombre_salida=None, color="negro"):
+# Hoja de tamano fijo (opcional): todas las firmas salen del MISMO tamano, con el
+# trazo agrandado para llenar la hoja. Asi la disenadora ya no las acomoda una por
+# una: entran directo al recuadro de CardPresso y todas se ven igual de grandes.
+# La medida por defecto sale del archivo de referencia de Mirza (2026-07-23):
+# 1016x638 px a 300 DPI = 8.60 x 5.40 cm (tamano de tarjeta CR80).
+HOJA_ANCHO, HOJA_ALTO = 1016, 638
+HOJA_MARGEN = 0.06        # aire alrededor del trazo (6% del lado)
+
+
+def _ajustar_a_hoja(alfa, ancho, alto, margen=HOJA_MARGEN):
+    # Agranda el trazo hasta llenar la hoja (proporcional: una firma NO se estira,
+    # deformarla se nota) y lo centra en un lienzo del tamano pedido.
+    # Recortar al trazo EXACTO: el aire lo pone la hoja, si no se sumaria dos veces.
+    ys, xs = np.where(alfa > 0.05)
+    alfa = alfa[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+    h, w = alfa.shape
+    util_w = max(1, int(round(ancho * (1 - 2 * margen))))
+    util_h = max(1, int(round(alto * (1 - 2 * margen))))
+    escala = min(util_w / w, util_h / h)
+    nuevo_w = max(1, min(ancho, int(round(w * escala))))
+    nuevo_h = max(1, min(alto, int(round(h * escala))))
+
+    # Al agrandar, la rampa del antialias se ensancha igual que el trazo y el borde
+    # sale blandito. Se re-aprieta el alfa (mismo criterio que `_alfa_apretado` del
+    # recorte de personas: contraste, SIN morfologia) para devolverle ~1px de
+    # antialias. Solo cuando se agranda; al achicar el remuestreo ya deja el borde fino.
+    interp = cv2.INTER_LANCZOS4 if escala > 1 else cv2.INTER_AREA
+    chico = np.clip(cv2.resize(alfa, (nuevo_w, nuevo_h), interpolation=interp), 0.0, 1.0)
+    if escala > 1:
+        # Factor medido (2026-07-23) contra la referencia de Mirza: con escala*4
+        # acotado a 16 el borde queda con ~0.2 px de antialias (rampa 0.17-0.19),
+        # igual de firme que su hoja hecha a mano (0.10) y que las firmas crudas
+        # (0.07-0.24). Sin esto la rampa se va a 3.6 px = borde blandito.
+        k = min(max(escala * 4.0, 4.0), 16.0)
+        chico = np.clip((chico - 0.5) * k + 0.5, 0.0, 1.0)
+
+    lienzo = np.zeros((alto, ancho), dtype=np.float32)
+    x = (ancho - nuevo_w) // 2
+    y = (alto - nuevo_h) // 2
+    lienzo[y:y + nuevo_h, x:x + nuevo_w] = chico
+    return lienzo
+
+
+def procesar(ruta, carpeta_salida, nombre_salida=None, color="negro", hoja=None):
     # Una firma FOTOGRAFIADA con celular puede venir "de costado" por la
     # orientacion EXIF (mismo bug que las selfies, feedback 2026-07-01): sin
     # esto el _firma.png final saldria girado 90 grados.
@@ -61,6 +105,10 @@ def procesar(ruta, carpeta_salida, nombre_salida=None, color="negro"):
     y0, y1 = max(int(ys.min()) - m, 0), min(int(ys.max()) + m, alfa.shape[0] - 1)
     x0, x1 = max(int(xs.min()) - m, 0), min(int(xs.max()) + m, alfa.shape[1] - 1)
     alfa = alfa[y0:y1 + 1, x0:x1 + 1]
+
+    # Opcional: llevar el trazo a una hoja de tamano fijo (todas iguales).
+    if hoja:
+        alfa = _ajustar_a_hoja(alfa, int(hoja[0]), int(hoja[1]))
 
     # Tinta de un solo color (negra por defecto) sobre fondo transparente (PNG).
     # "blanco" sirve para diseños de carnet oscuros, donde la firma negra no se

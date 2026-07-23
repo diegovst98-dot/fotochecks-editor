@@ -198,9 +198,10 @@ def evaluar_recorte(ruta, session_fino, session_clasica):
     return sin_fondo, dudoso
 
 
-def procesar_firma(ruta, nombre_salida=None, color="negro"):
+def procesar_firma(ruta, nombre_salida=None, color="negro", hoja=None):
     # Guarda en la carpeta de salida ACTIVA (la que eligio el usuario).
-    return _firmas.procesar(ruta, SALIDA, nombre_salida, color)
+    # `hoja` = (ancho, alto) en px para que todas salgan del mismo tamano.
+    return _firmas.procesar(ruta, SALIDA, nombre_salida, color, hoja)
 
 
 def registrar_lote(cliente, total, renombradas, carpeta):
